@@ -2,15 +2,16 @@ import * as http from "http";
 import { spawn } from "child_process";
 
 /** `git http-backend` CGI를 감싼 로컬 smart HTTP 서버 */
-export function startGitServer(projectRoot: string): Promise<{ url: string; close: () => void; requests: { path: string; bytes: number }[] }> {
-	const requests: { path: string; bytes: number }[] = [];
+export function startGitServer(projectRoot: string): Promise<{ url: string; close: () => void; requests: { path: string; bytes: number; resBytes: number }[] }> {
+	const requests: { path: string; bytes: number; resBytes: number }[] = [];
 	const server = http.createServer((req, res) => {
 		const u = new URL(req.url!, "http://x");
 		const chunks: Buffer[] = [];
 		req.on("data", (c) => chunks.push(c));
 		req.on("end", () => {
 			const body = Buffer.concat(chunks);
-			requests.push({ path: u.pathname, bytes: body.length });
+			const rec = { path: u.pathname, bytes: body.length, resBytes: 0 };
+			requests.push(rec);
 			const t0 = Date.now();
 			if (process.env.GS_DEBUG) console.log("REQ", req.method, u.pathname + u.search, body.length, body.length < 1000 ? JSON.stringify(body.toString()) : "");
 			const cgi = spawn("git", ["http-backend"], {
@@ -33,6 +34,7 @@ export function startGitServer(projectRoot: string): Promise<{ url: string; clos
 			let total = 0;
 			cgi.stdout.on("data", (c: Buffer) => {
 				total += c.length;
+				rec.resBytes = total;
 				if (pending === null) return void res.write(c);
 				pending = Buffer.concat([pending, c]);
 				let sep = pending.indexOf("\r\n\r\n");

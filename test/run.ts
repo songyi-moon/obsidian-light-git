@@ -82,8 +82,11 @@ async function main() {
 	const beforeB = server.requests.length;
 	const msg2 = await B.b.connect();
 	check("B connect pulls remote", fs.existsSync(path.join(B.root, "notes/hello.md")), msg2);
-	const fetchPosts = server.requests.slice(beforeB).filter((r) => r.path.endsWith("git-upload-pack")).length;
-	check("B clone fetched blobs in batches", fetchPosts >= 4, `upload-pack POSTs=${fetchPosts}`);
+	const fetchRes = server.requests.slice(beforeB).filter((r) => r.path.endsWith("git-upload-pack"));
+	check("B clone fetched blobs in batches", fetchRes.length >= 4, `upload-pack POSTs=${fetchRes.length}`);
+	// 작은 .md를 먼저 받고 나서 1MB 파일들을 한꺼번에 몰아 요청하면 안 된다 (0.1.1에서 앱이 꺼진 원인)
+	const maxRes = Math.max(...fetchRes.map((r) => r.resBytes));
+	check("B clone each response ≤ ~chunk size", maxRes < 6.5 * 1024 * 1024, `max=${(maxRes / 1048576).toFixed(1)}MB`);
 	check("B clone files intact", fs.readFileSync(path.join(B.root, "assets/img7.bin")).equals(fs.readFileSync(path.join(A.root, "assets/img7.bin"))));
 	const packsLeft = fs.readdirSync(path.join(B.root, ".git/objects/pack")).filter((f) => f.endsWith(".pack")).length;
 	check("B clone keeps only the tree pack", packsLeft === 1, `packs=${packsLeft}`);

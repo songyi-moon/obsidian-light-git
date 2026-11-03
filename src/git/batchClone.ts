@@ -26,11 +26,12 @@ export interface BatchCloneOptions {
 	branch: string;
 	/** 한 번에 받을 blob 묶음의 목표 크기 */
 	batchBytes: number;
+	onProgress?: (msg: string) => void;
 }
 
-/** 크기를 모르는 blob을 처음엔 적게 요청하고, 받은 평균 크기로 다음 묶음 개수를 정한다 */
-const FIRST_BATCH = 1;
+/** 크기를 모르는 blob을 처음엔 1개만 요청하고, 받은 평균 크기로 다음 묶음 개수를 정한다 */
 const MAX_WANTS = 500;
+const TEXT_RE = /\.(md|txt|canvas|json|csv|ya?ml|css|js|ts|html?|xml|svg|base)$/i;
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -47,37 +48,53 @@ export async function batchClone(o: BatchCloneOptions): Promise<string | null> {
 	const base = { fs: o.fs as unknown as git.FsClient, dir: o.dir };
 
 	// 1) 커밋 + 트리
+	o.onProgress?.("Git: 파일 목록 받는 중…");
 	const first = parseFetch(await post(o, fetchRequest([tip], ["deepen 1", "filter blob:none"])));
 	await ensureDir(o.fs, ".git/objects/pack");
 	await storePack(o, first.pack);
 	if (first.shallow.length) await o.fs.writeFile(".git/shallow", first.shallow.join("\n") + "\n");
 
 	// 2) 파일 내용
-	const all = new Set<string>();
+	const all = new Map<string, string>();
 	const cache = {};
 	const { commit } = await git.readCommit({ ...base, oid: tip, cache });
-	await listBlobs(base, commit.tree, cache, all);
-	const missing: string[] = [];
-	for (const oid of all) if (!(await exists(o.fs, `.git/objects/${oid.slice(0, 2)}/${oid.slice(2)}`))) missing.push(oid);
+	await listBlobs(base, commit.tree, "", cache, all);
+	// 글 파일과 나머지(이미지·PDF 등)는 크기가 수천 배 차이 나므로 묶음 크기를 따로 잰다
+	const text: string[] = [];
+	const other: string[] = [];
+	for (const [oid, path] of all) {
+		if (await exists(o.fs, `.git/objects/${oid.slice(0, 2)}/${oid.slice(2)}`)) continue;
+		(TEXT_RE.test(path) ? text : other).push(oid);
+	}
 
-	let count = FIRST_BATCH;
-	let gotBytes = 0;
-	let gotBlobs = 0;
-	for (let i = 0; i < missing.length; ) {
-		const batch = missing.slice(i, i + count);
-		const { pack } = parseFetch(await post(o, fetchRequest(batch, [])));
-		gotBytes += pack.byteLength;
-		gotBlobs += batch.length;
-		const packPath = await storePack(o, pack);
-		const batchCache = {};
-		for (const oid of batch) {
-			const { blob } = await git.readBlob({ ...base, oid, cache: batchCache });
-			await git.writeBlob({ ...base, blob });
+	const total = text.length + other.length;
+	let done = 0;
+	let doneBytes = 0;
+	for (const queue of [text, other]) {
+		let count = 1;
+		let gotBytes = 0;
+		let gotBlobs = 0;
+		for (let i = 0; i < queue.length; ) {
+			o.onProgress?.(`Git: 받는 중 ${done}/${total}개 (${(doneBytes / 1048576).toFixed(0)}MB)`);
+			const batch = queue.slice(i, i + count);
+			const { pack } = parseFetch(await post(o, fetchRequest(batch, [])));
+			gotBytes += pack.byteLength;
+			gotBlobs += batch.length;
+			doneBytes += pack.byteLength;
+			const packPath = await storePack(o, pack);
+			const batchCache = {};
+			for (const oid of batch) {
+				const { blob } = await git.readBlob({ ...base, oid, cache: batchCache });
+				await git.writeBlob({ ...base, blob });
+			}
+			await o.fs.unlink(packPath);
+			await o.fs.unlink(packPath.replace(/\.pack$/, ".idx"));
+			i += batch.length;
+			done += batch.length;
+			// 평균 크기로 다음 개수를 정하되 한 번에 두 배까지만 늘린다 (작은 파일 몇 개만 보고 크게 잡지 않게)
+			const fit = Math.floor(o.batchBytes / Math.max(1, gotBytes / gotBlobs));
+			count = Math.max(1, Math.min(MAX_WANTS, count * 2, fit));
 		}
-		await o.fs.unlink(packPath);
-		await o.fs.unlink(packPath.replace(/\.pack$/, ".idx"));
-		i += batch.length;
-		count = Math.max(1, Math.min(MAX_WANTS, Math.floor(o.batchBytes / Math.max(1, gotBytes / gotBlobs))));
 	}
 
 	await git.writeRef({ ...base, ref: `refs/remotes/origin/${o.branch}`, value: tip, force: true });
@@ -170,11 +187,12 @@ async function storePack(o: BatchCloneOptions, pack: Uint8Array): Promise<string
 	return path;
 }
 
-async function listBlobs(base: { fs: git.FsClient; dir: string }, treeOid: string, cache: object, out: Set<string>) {
+/** oid → 경로 (같은 내용의 파일이 여럿이면 하나만) */
+async function listBlobs(base: { fs: git.FsClient; dir: string }, treeOid: string, prefix: string, cache: object, out: Map<string, string>) {
 	const { tree } = await git.readTree({ ...base, oid: treeOid, cache });
 	for (const e of tree) {
-		if (e.type === "tree") await listBlobs(base, e.oid, cache, out);
-		else if (e.type === "blob") out.add(e.oid);
+		if (e.type === "tree") await listBlobs(base, e.oid, `${prefix}${e.path}/`, cache, out);
+		else if (e.type === "blob" && !out.has(e.oid)) out.set(e.oid, prefix + e.path);
 	}
 }
 

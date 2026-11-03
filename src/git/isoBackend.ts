@@ -52,6 +52,8 @@ export class IsoBackend implements GitBackend {
 		private http: git.HttpClient,
 		private cfg: () => GitConfig,
 		private dir = "/",
+		/** 분할 clone 진행 상황 (null = 끝) */
+		private onProgress: (msg: string | null) => void = () => {},
 	) {}
 
 	private get base() {
@@ -121,12 +123,17 @@ export class IsoBackend implements GitBackend {
 	private async checkoutRemote(shallow: boolean) {
 		const { branch, chunkBytes } = this.cfg();
 		// 큰 저장소는 한 번에 받으면 메모리 초과로 앱이 꺼진다 → 지원하는 서버면 분할로 받는다
-		const tip =
-			(shallow && (await batchClone({ fs: this.fs, dir: this.dir, ...this.remote, branch, batchBytes: chunkBytes }))) ||
-			(await git.fetch({ ...this.base, ...this.remote, ref: branch, singleBranch: true, tags: false, depth: shallow ? 1 : undefined })).fetchHead;
-		if (!tip) return;
-		await git.writeRef({ ...this.base, ref: `refs/heads/${branch}`, value: tip, force: true });
-		await git.checkout({ ...this.base, ref: branch, force: true });
+		try {
+			const tip =
+				(shallow && (await batchClone({ fs: this.fs, dir: this.dir, ...this.remote, branch, batchBytes: chunkBytes, onProgress: this.onProgress }))) ||
+				(await git.fetch({ ...this.base, ...this.remote, ref: branch, singleBranch: true, tags: false, depth: shallow ? 1 : undefined })).fetchHead;
+			if (!tip) return;
+			await git.writeRef({ ...this.base, ref: `refs/heads/${branch}`, value: tip, force: true });
+			this.onProgress("Git: 볼트에 파일 쓰는 중…");
+			await git.checkout({ ...this.base, ref: branch, force: true });
+		} finally {
+			this.onProgress(null);
+		}
 	}
 
 	async changes(): Promise<WorkChange[]> {

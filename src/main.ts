@@ -30,6 +30,7 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 	/** 충돌 안내는 자동으로 닫히지 않으므로, 충돌을 다 해결하면 직접 닫는다 */
 	private conflictNotice: Notice | null = null;
 	private staging: Promise<void> = Promise.resolve();
+	private progressNotice: Notice | null = null;
 	private statusEl: HTMLElement | null = null;
 	private autoSyncTimer: number | null = null;
 
@@ -61,7 +62,16 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 
 		this.app.workspace.onLayoutReady(() => {
 			if (this.settings.pullOnStartup && this.settings.remoteUrl) {
-				this.run("pull", async (b) => ((await b.isRepo()) ? this.afterPull(await b.pull()) : null), true);
+				this.run(
+					"pull",
+					async (b) => {
+						if (!(await b.isRepo())) return null;
+						// 첫 clone을 다 못 받은 상태(HEAD 없음)면 자동으로 이어받지 않는다 — 큰 저장소에서 켤 때마다 꺼지는 원인
+						const cloned = await b.log(1).then((l) => l.length > 0, () => false);
+						return cloned ? this.afterPull(await b.pull()) : null;
+					},
+					true,
+				);
 			}
 			this.scheduleAutoSync();
 		});
@@ -139,7 +149,7 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 			}
 			if (choice === "native") throw new Error("git 실행 파일을 찾을 수 없습니다.");
 		}
-		this.backend = new IsoBackend(new ObsidianFs(adapter, dir), obsidianHttp, () => this.gitConfig());
+		this.backend = new IsoBackend(new ObsidianFs(adapter, dir), obsidianHttp, () => this.gitConfig(), "/", (msg) => this.showProgress(msg));
 		return this.backend;
 	}
 
@@ -249,6 +259,15 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 			this.refreshViews();
 		});
 		return this.staging;
+	}
+
+	/** 오래 걸리는 작업(분할 clone)의 진행 상황을 알림 하나로 갱신. null이면 닫는다 */
+	private showProgress(msg: string | null) {
+		if (msg === null) {
+			this.progressNotice?.hide();
+			this.progressNotice = null;
+		} else if (this.progressNotice) this.progressNotice.setMessage(msg);
+		else this.progressNotice = new Notice(msg, 0);
 	}
 
 	/** 대기 중인 스테이징이 끝날 때까지 (상태를 읽거나 커밋하기 전에) */
