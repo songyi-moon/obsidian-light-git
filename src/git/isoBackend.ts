@@ -1,4 +1,5 @@
 import * as git from "isomorphic-git";
+import { batchClone } from "./batchClone";
 import { messageText, type CommitInfo, type CommitMessage, type ConflictVersions, type FileChange, type GitBackend, type GitConfig, type WorkChange } from "./types";
 
 /** 분할 push 때 커밋 하나를 가리키는 로컬 전용 임시 ref (원격에는 생기지 않음) */
@@ -118,10 +119,13 @@ export class IsoBackend implements GitBackend {
 
 	/** 로컬 커밋이 없을 때: 원격 브랜치를 그대로 가져와 working tree에 반영 (clone과 동일). */
 	private async checkoutRemote(shallow: boolean) {
-		const { branch } = this.cfg();
-		const res = await git.fetch({ ...this.base, ...this.remote, ref: branch, singleBranch: true, tags: false, depth: shallow ? 1 : undefined });
-		if (!res.fetchHead) return;
-		await git.writeRef({ ...this.base, ref: `refs/heads/${branch}`, value: res.fetchHead, force: true });
+		const { branch, chunkBytes } = this.cfg();
+		// 큰 저장소는 한 번에 받으면 메모리 초과로 앱이 꺼진다 → 지원하는 서버면 분할로 받는다
+		const tip =
+			(shallow && (await batchClone({ fs: this.fs, dir: this.dir, ...this.remote, branch, batchBytes: chunkBytes }))) ||
+			(await git.fetch({ ...this.base, ...this.remote, ref: branch, singleBranch: true, tags: false, depth: shallow ? 1 : undefined })).fetchHead;
+		if (!tip) return;
+		await git.writeRef({ ...this.base, ref: `refs/heads/${branch}`, value: tip, force: true });
 		await git.checkout({ ...this.base, ref: branch, force: true });
 	}
 

@@ -23,6 +23,7 @@ export function startGitServer(projectRoot: string): Promise<{ url: string; clos
 					REQUEST_METHOD: req.method,
 					CONTENT_TYPE: req.headers["content-type"] || "",
 					CONTENT_LENGTH: String(body.length),
+					GIT_PROTOCOL: String(req.headers["git-protocol"] || ""),
 					REMOTE_USER: "test",
 					REMOTE_ADDR: "127.0.0.1",
 				},

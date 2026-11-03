@@ -40,6 +40,7 @@ async function main() {
 	fs.mkdirSync(remoteRoot);
 	execFileSync("git", ["init", "--bare", "-b", "main", path.join(remoteRoot, "vault.git")]);
 	sh(path.join(remoteRoot, "vault.git"), "config", "http.receivepack", "true");
+	sh(path.join(remoteRoot, "vault.git"), "config", "uploadpack.allowFilter", "true"); // GitHub처럼 partial clone 허용
 	const server = await startGitServer(remoteRoot);
 
 	const cfg = (name: string): (() => GitConfig) => () => ({
@@ -78,8 +79,15 @@ async function main() {
 	// 2. 기기 B (iOS 가정): 빈 vault에서 connect → 원격 내용 받기
 	const B = isoDevice("B");
 	write(B.root, ".obsidian/app.json", '{"local":true}');
+	const beforeB = server.requests.length;
 	const msg2 = await B.b.connect();
 	check("B connect pulls remote", fs.existsSync(path.join(B.root, "notes/hello.md")), msg2);
+	const fetchPosts = server.requests.slice(beforeB).filter((r) => r.path.endsWith("git-upload-pack")).length;
+	check("B clone fetched blobs in batches", fetchPosts >= 4, `upload-pack POSTs=${fetchPosts}`);
+	check("B clone files intact", fs.readFileSync(path.join(B.root, "assets/img7.bin")).equals(fs.readFileSync(path.join(A.root, "assets/img7.bin"))));
+	const packsLeft = fs.readdirSync(path.join(B.root, ".git/objects/pack")).filter((f) => f.endsWith(".pack")).length;
+	check("B clone keeps only the tree pack", packsLeft === 1, `packs=${packsLeft}`);
+	check("B clone is shallow", fs.existsSync(path.join(B.root, ".git/shallow")));
 	check("B status clean", (await B.b.changes()).length === 0, JSON.stringify(await B.b.changes()));
 
 	// 3. 서로 다른 파일 수정 → 자동 병합
