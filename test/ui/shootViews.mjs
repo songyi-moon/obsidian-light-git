@@ -54,10 +54,16 @@ check("history", info.commits === 3 && info.historyFiles === 2);
 await page.screenshot({ path: `${out}/views.png` });
 
 // 체크박스/버튼 동작
-await page.evaluate(() => {
+const instant = await page.evaluate(() => {
   const rows = document.querySelectorAll("#staging .light-git-file input");
   rows[2].click(); // daily: 선택
+  // 다시 읽기(상태 확인)를 기다리지 않고 바로 화면에 반영돼야 한다
+  const now = { daily: document.querySelectorAll("#staging .light-git-file input")[2].checked, hint: document.querySelector("#staging .light-git-commit-hint")?.textContent };
   rows[0].click(); // a.md: 해제
+  return now;
+});
+check("checkbox updates view instantly", instant.daily === true && instant.hint === "3/4 선택", JSON.stringify(instant));
+await page.evaluate(() => {
   document.querySelector("#staging .light-git-group-head input").click(); // 일부 선택 → 전체 선택
   document.querySelector("#staging .light-git-commit-btn").click();
 });

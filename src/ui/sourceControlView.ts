@@ -1,4 +1,4 @@
-import { ItemView, setIcon, type WorkspaceLeaf } from "obsidian";
+import { ItemView, Notice, setIcon, type WorkspaceLeaf } from "obsidian";
 import type { WorkChange } from "../git/types";
 import type LightGitPlugin from "../main";
 import { ConfirmModal } from "./confirmModal";
@@ -19,6 +19,10 @@ export class SourceControlView extends ItemView {
 	private commitBtn!: HTMLButtonElement;
 	private hintEl!: HTMLElement;
 	private loading = false;
+	/** 읽는 도중 들어온 새로고침 요청 → 끝나고 한 번 더 */
+	private again = false;
+	/** 마지막으로 읽은 상태. 체크박스는 다시 읽지 않고 이걸 바꿔서 바로 그린다 */
+	private state: { merging: boolean; conflicts: string[]; changes: WorkChange[] } | null = null;
 	/** 숨겨져 있어서 갱신을 미룬 상태 */
 	private stale = false;
 	/** 체크(스테이징)된 파일이 있으면 그것만 커밋 */
@@ -94,7 +98,11 @@ export class SourceControlView extends ItemView {
 	}
 
 	async refresh() {
-		if (this.loading || this.plugin.isBusy() || !this.listEl) return;
+		if (this.plugin.isBusy() || !this.listEl) return;
+		if (this.loading) {
+			this.again = true;
+			return;
+		}
 		// 사이드바가 닫혀 있으면 상태 확인(vault 전체 스캔)을 하지 않는다 — 모바일에선 타이핑 멈출 때마다 돌던 비용
 		if (!this.contentEl.isShown()) {
 			this.stale = true;
@@ -108,22 +116,50 @@ export class SourceControlView extends ItemView {
 				this.renderNotConnected();
 				return;
 			}
+			await this.plugin.stagingDone(); // 체크박스 처리 전 index를 읽으면 방금 누른 게 되돌아가 보인다
 			const conflicts = await b.conflicts();
 			const changes = (await b.changes()).filter((c) => !conflicts.includes(c.path));
-			const staged = changes.filter((c) => c.staged);
 			const merging = await b.isMerging();
-			this.stagedOnly = staged.length > 0 && !merging;
-			const count = this.stagedOnly ? staged.length : changes.length + conflicts.length;
-			this.messageEl.placeholder = `커밋 메시지 (비우면: ${this.plugin.defaultMessage(count)})`;
-			this.commitBtn.setText(this.stagedOnly ? `${staged.length}개 커밋 & 동기화` : "커밋 & 동기화");
-			this.hintEl.setText(merging ? "머지 커밋" : this.stagedOnly ? `${staged.length}/${changes.length} 선택` : changes.length ? `전체 ${changes.length}개` : "");
-			this.render(merging, conflicts, changes);
+			this.state = { merging, conflicts, changes };
+			this.show();
 		} catch (e) {
 			this.listEl.empty();
 			this.listEl.createDiv({ cls: "light-git-empty", text: `오류: ${e instanceof Error ? e.message : String(e)}` });
 		} finally {
 			this.loading = false;
 		}
+		if (this.again) {
+			this.again = false;
+			this.refresh();
+		}
+	}
+
+	private show() {
+		if (!this.state) return;
+		const { merging, conflicts, changes } = this.state;
+		const staged = changes.filter((c) => c.staged);
+		this.stagedOnly = staged.length > 0 && !merging;
+		const count = this.stagedOnly ? staged.length : changes.length + conflicts.length;
+		this.messageEl.placeholder = `커밋 메시지 (비우면: ${this.plugin.defaultMessage(count)})`;
+		this.commitBtn.setText(this.stagedOnly ? `${staged.length}개 커밋 & 동기화` : "커밋 & 동기화");
+		this.hintEl.setText(merging ? "머지 커밋" : this.stagedOnly ? `${staged.length}/${changes.length} 선택` : changes.length ? `전체 ${changes.length}개` : "");
+		this.render(merging, conflicts, changes);
+	}
+
+	/** 체크박스: 화면은 바로 바꾸고 스테이징은 뒤에서 순서대로 */
+	private toggle(paths: string[], on: boolean) {
+		if (this.plugin.isBusy()) {
+			new Notice("Git 작업이 이미 진행 중입니다.");
+			return this.show(); // 브라우저가 이미 바꾼 체크 표시를 되돌린다
+		}
+		for (const c of this.state?.changes ?? []) {
+			if (!paths.includes(c.path)) continue;
+			c.staged = on;
+			c.unstaged = !on;
+		}
+		this.show();
+		if (on) this.plugin.stage(paths);
+		else this.plugin.unstage(paths);
 	}
 
 	private renderNotConnected() {
@@ -142,11 +178,7 @@ export class SourceControlView extends ItemView {
 		}
 		// 머지 중에는 변경 전체가 머지 커밋에 들어가므로 체크박스를 보여주지 않는다
 		const staged = changes.filter((c) => c.staged);
-		const g = this.group("changes", merging ? "머지됨" : "변경", changes.length, "", merging || !changes.length ? null : staged.length === changes.length ? "all" : staged.length ? "some" : "none", (on) => {
-			const paths = changes.map((c) => c.path);
-			if (on) this.plugin.stage(paths);
-			else this.plugin.unstage(paths);
-		});
+		const g = this.group("changes", merging ? "머지됨" : "변경", changes.length, "", merging || !changes.length ? null : staged.length === changes.length ? "all" : staged.length ? "some" : "none", (on) => this.toggle(changes.map((c) => c.path), on));
 		if (!changes.length && !merging) g.createDiv({ cls: "light-git-empty", text: "변경 사항 없음" });
 		for (const c of changes) {
 			const check = merging ? null : c.staged && c.unstaged ? "some" : c.staged ? "all" : "none";
@@ -187,7 +219,7 @@ export class SourceControlView extends ItemView {
 
 	private row(parent: HTMLElement, path: string, type: string, check: "all" | "some" | "none" | null, onClick: () => void) {
 		const row = parent.createDiv({ cls: `light-git-file type-${type}`, attr: { "aria-label": path } });
-		if (check) this.checkbox(row, check, (on) => (on ? this.plugin.stage([path]) : this.plugin.unstage([path])));
+		if (check) this.checkbox(row, check, (on) => this.toggle([path], on));
 		const slash = path.lastIndexOf("/");
 		const name = row.createDiv({ cls: "light-git-file-name" });
 		name.createSpan({ cls: "light-git-file-base", text: path.slice(slash + 1) });

@@ -29,6 +29,7 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 	private busy = false;
 	/** 충돌 안내는 자동으로 닫히지 않으므로, 충돌을 다 해결하면 직접 닫는다 */
 	private conflictNotice: Notice | null = null;
+	private staging: Promise<void> = Promise.resolve();
 	private statusEl: HTMLElement | null = null;
 	private autoSyncTimer: number | null = null;
 
@@ -229,11 +230,30 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 	}
 
 	stage(paths: string[]) {
-		return this.run("스테이징", async (b) => (await b.stage(paths), null), true);
+		return this.enqueueStaging((b) => b.stage(paths));
 	}
 
 	unstage(paths: string[]) {
-		return this.run("스테이징 해제", async (b) => (await b.unstage(paths), null), true);
+		return this.enqueueStaging((b) => b.unstage(paths));
+	}
+
+	/** 체크박스는 연달아 눌리므로 버리지 않고 순서대로 처리한다. 화면은 뷰가 먼저 바꿔 두고, 실패했을 때만 다시 읽는다. */
+	private enqueueStaging(fn: (b: GitBackend) => Promise<void>) {
+		if (this.busy) {
+			new Notice("Git 작업이 이미 진행 중입니다.");
+			this.refreshViews();
+			return this.staging;
+		}
+		this.staging = this.staging.then(async () => fn(await this.getBackend())).catch((e) => {
+			new Notice(`Git 스테이징 실패: ${errorText(e)}`, 10000);
+			this.refreshViews();
+		});
+		return this.staging;
+	}
+
+	/** 대기 중인 스테이징이 끝날 때까지 (상태를 읽거나 커밋하기 전에) */
+	stagingDone(): Promise<void> {
+		return this.staging;
 	}
 
 	/** commit → pull(merge) → push. stagedOnly면 스테이징된 파일만 커밋 (자동 동기화는 항상 전체). */
@@ -244,6 +264,7 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 				if (!(await b.isRepo())) return quiet ? null : "먼저 설정에서 '원격 저장소 연결'을 실행하세요.";
 				// 기본 메시지의 {{numFiles}}는 커밋할 때 센다 (상태 확인을 두 번 하지 않으려고)
 				const msg = message ?? ((n: number) => this.defaultMessage(n));
+				await this.staging; // 방금 누른 체크박스까지 반영된 뒤 커밋
 				const committed = await b.commit(msg, stagedOnly);
 				const conflicts = await b.pull();
 				if (conflicts.length) return this.afterPull(conflicts);

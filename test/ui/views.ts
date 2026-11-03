@@ -45,6 +45,7 @@ const plugin = (backend: unknown): any => ({
 	sync: async (...args: unknown[]) => ((window as any).__calls.push(["sync", ...args]), true),
 	stage: (p: string[]) => (window as any).__calls.push(["stage", p]),
 	unstage: (p: string[]) => (window as any).__calls.push(["unstage", p]),
+	stagingDone: async () => {},
 	pullCommand() {}, pushCommand() {}, activateHistory() {}, connect() {}, openMerge() {}, openChangeDiff() {}, openFile() {}, discard() {}, openCommitDiff() {},
 });
 const wrap = document.createElement("div");
