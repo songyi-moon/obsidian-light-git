@@ -149,7 +149,9 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 			}
 			if (choice === "native") throw new Error("git 실행 파일을 찾을 수 없습니다.");
 		}
-		this.backend = new IsoBackend(new ObsidianFs(adapter, dir), obsidianHttp, () => this.gitConfig(), "/", (msg) => this.showProgress(msg));
+		const gitFs = new ObsidianFs(adapter, dir);
+		if (await adapter.exists(dir ? `${dir}/.lightgit/config` : ".lightgit/config")) gitFs.gitDir = ".lightgit";
+		this.backend = new IsoBackend(gitFs, obsidianHttp, () => this.gitConfig(), "/", (msg) => this.showProgress(msg));
 		return this.backend;
 	}
 

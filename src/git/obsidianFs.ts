@@ -20,6 +20,12 @@ export class ObsidianFs {
 	/** .git/index stat 캐시: isomorphic-git이 작업 파일 하나마다 index 변경 여부를 stat으로 확인해서, 캐시하면 stat 호출이 절반이 된다 */
 	private indexStat: { at: number; st: Awaited<ReturnType<DataAdapter["stat"]>> } | null = null;
 
+	/**
+	 * 플러그인 저장소 폴더. 볼트에 PC git이 만든 큰 .git이 있으면 ".lightgit"으로 바꾼다:
+	 * isomorphic-git은 큰 pack을 통째로 메모리에 올리므로 그 .git은 열지 않고, ".git/…" 경로를 여기로 돌린다.
+	 */
+	gitDir = ".git";
+
 	/** root: 저장소로 쓸 vault 하위 폴더 (빈 값 = vault 전체). git 경로는 모두 이 폴더 기준이 된다. */
 	constructor(
 		private adapter: DataAdapter,
@@ -29,12 +35,13 @@ export class ObsidianFs {
 	private norm(path: string): string {
 		let p = path.replace(/\\/g, "/").replace(/^\.?\/+/, "").replace(/\/+$/, "");
 		if (p === ".") p = "";
+		if (this.gitDir !== ".git" && (p === ".git" || p.startsWith(".git/"))) p = this.gitDir + p.slice(4);
 		if (this.root) return p === "" ? this.root : `${this.root}/${p}`;
 		return p === "" ? "/" : p;
 	}
 
 	private isIndex(p: string) {
-		return p === (this.root ? `${this.root}/.git/index` : ".git/index");
+		return p === (this.root ? `${this.root}/${this.gitDir}/index` : `${this.gitDir}/index`);
 	}
 
 	private async rawStat(p: string) {

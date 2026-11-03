@@ -174,3 +174,8 @@ export function unresolvedCount(regions: Region[]): { conflicts: number; changes
 export function mergedText(regions: Region[]): string {
 	return joinLines(regions.flatMap(regionResult));
 }
+
+/** git과 같은 충돌 마커 파일 내용 (충돌 아닌 영역은 현재 결과) */
+export function conflictMarkerText(regions: Region[]): string {
+	return joinLines(regions.flatMap((r) => (r.kind === "conflict" && !isResolved(r) ? ["<<<<<<< ours", ...r.ours, "=======", ...r.theirs, ">>>>>>> theirs"] : regionResult(r))));
+}

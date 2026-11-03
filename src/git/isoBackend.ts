@@ -1,5 +1,6 @@
 import * as git from "isomorphic-git";
 import { partialFetch } from "./partialFetch";
+import { applyNonConflicting, buildRegions, conflictMarkerText, mergedText } from "../merge/mergeModel";
 import { messageText, type CommitInfo, type CommitMessage, type ConflictVersions, type FileChange, type GitBackend, type GitConfig, type WorkChange } from "./types";
 
 /** 분할 push 때 커밋 하나를 가리키는 로컬 전용 임시 ref (원격에는 생기지 않음) */
@@ -21,7 +22,14 @@ interface Fs {
 	unlink(path: string): Promise<void>;
 	lstat(path: string): Promise<{ size: number }>;
 	mkdir(path: string): Promise<void>;
+	readdir(path: string): Promise<string[]>;
+	/** 플러그인 저장소 폴더 (ObsidianFs.gitDir 참고) */
+	gitDir: string;
 }
+
+/** 볼트의 .git pack이 이보다 크면 PC git이 만든 저장소로 보고 열지 않는다 (isomorphic-git이 pack을 통째로 메모리에 올림) */
+const HEAVY_PACK = 32 * 1024 * 1024;
+const OWN_GITDIR = ".lightgit";
 
 /** .git/LIGHT_GIT_CONFLICTS 내용 */
 interface ConflictRecord {
@@ -37,6 +45,8 @@ interface TreeChange extends FileChange {
 }
 
 const decoder = new TextDecoder();
+/** checkout 기본값은 바꿀 파일 전부를 동시에 읽어 써서 1GB면 1GB가 메모리에 올라간다 → 몇 개씩 나눠서 */
+const BATCHED = { nonBlocking: true, batchSize: 4 };
 const OID_RE = /^[0-9a-f]{40}$/;
 
 /**
@@ -99,9 +109,9 @@ export class IsoBackend implements GitBackend {
 	async connect(): Promise<string> {
 		const { branch, remoteUrl } = this.cfg();
 		if (!remoteUrl) throw new Error("원격 저장소 URL을 설정에서 입력하세요.");
+		if (await this.hasHeavyGit()) await this.useOwnGitDir();
 		if (!(await this.isRepo())) {
 			await git.init({ ...this.base, defaultBranch: branch });
-			if (!(await this.exists(".gitignore"))) await this.fs.writeFile(".gitignore", DEFAULT_GITIGNORE);
 		}
 		await git.addRemote({ ...this.base, remote: "origin", url: remoteUrl, force: true });
 		await git.setConfig({ ...this.base, path: `branch.${branch}.remote`, value: "origin" });
@@ -109,6 +119,7 @@ export class IsoBackend implements GitBackend {
 
 		const refs = await git.listServerRefs({ ...this.remote, prefix: `refs/heads/${branch}` });
 		if (!refs.some((r) => r.ref === `refs/heads/${branch}`)) {
+			if (!(await this.exists(".gitignore"))) await this.fs.writeFile(".gitignore", DEFAULT_GITIGNORE);
 			return "원격 저장소가 비어 있습니다. 동기화하면 현재 vault가 올라갑니다.";
 		}
 		if (await this.headOid()) {
@@ -119,25 +130,97 @@ export class IsoBackend implements GitBackend {
 		return "원격 저장소를 받아왔습니다.";
 	}
 
-	/** 큰 저장소를 메모리 초과 없이 받는다 (partialFetch 참고). 서버가 지원하지 않으면 null. */
-	private partialFetch(): Promise<string | null> {
-		return partialFetch({ fs: this.fs, dir: this.dir, ...this.remote, branch: this.cfg().branch, onProgress: this.onProgress });
+	/** PC git으로 clone한 볼트처럼 .git에 큰 pack이 있는가 */
+	private async hasHeavyGit(): Promise<boolean> {
+		if (this.fs.gitDir !== ".git") return false;
+		const dir = ".git/objects/pack";
+		let total = 0;
+		for (const name of await this.fs.readdir(dir).catch(() => [] as string[])) {
+			if (name.endsWith(".pack")) total += (await this.fs.lstat(`${dir}/${name}`)).size;
+		}
+		return total > HEAVY_PACK;
 	}
 
-	/** 로컬 커밋이 없을 때: 원격 브랜치를 그대로 가져와 working tree에 반영 (clone과 동일). */
+	/** 기존 .git은 그대로 두고 플러그인 저장소를 .lightgit에 만든다. 양쪽 git 모두 .lightgit을 무시하게 한다. */
+	private async useOwnGitDir() {
+		await this.ignoreIn(".git/info", OWN_GITDIR + "/");
+		this.fs.gitDir = OWN_GITDIR;
+		if (!(await this.exists(".git"))) await this.fs.mkdir(".git"); // = .lightgit
+		await this.ignoreIn(".git/info", OWN_GITDIR + "/"); // 이제 .lightgit/info/exclude
+	}
+
+	private async ignoreIn(infoDir: string, line: string) {
+		if (!(await this.exists(infoDir))) await this.fs.mkdir(infoDir);
+		const file = `${infoDir}/exclude`;
+		const cur = await this.fs.readFile(file, { encoding: "utf8" }).then(String, () => "");
+		if (cur.split("\n").some((l) => l.trim() === line)) return;
+		await this.fs.writeFile(file, cur + (cur && !cur.endsWith("\n") ? "\n" : "") + line + "\n");
+	}
+
+	/** 큰 저장소를 메모리 초과 없이 받는다 (partialFetch 참고). 서버가 지원하지 않으면 null. */
+	private partialFetch(reuse?: (path: string, oid: string) => Promise<boolean>): Promise<string | null> {
+		return partialFetch({ fs: this.fs, dir: this.dir, ...this.remote, branch: this.cfg().branch, onProgress: this.onProgress, reuse });
+	}
+
+	/** 볼트에 있는 파일이 원격 blob과 같으면 그 파일로 blob과 index를 채운다 (다시 받지 않음) */
+	private async adoptLocal(path: string, oid: string): Promise<boolean> {
+		const data = await this.fs.readFile(path).catch(() => null);
+		if (!(data instanceof Uint8Array)) return false;
+		if ((await git.hashBlob({ object: data })).oid !== oid) return false;
+		await git.add({ ...this.base, filepath: path, force: true });
+		return true;
+	}
+
+	/**
+	 * 로컬 커밋이 없을 때: 원격 브랜치를 가져와 working tree에 반영 (clone과 동일).
+	 * 볼트에 이미 파일이 있으면 덮어쓰지 않는다 — 같은 파일은 그대로 쓰고, 내용이 다른 파일은 '변경됨'으로 남고, 없는 파일만 받아서 쓴다.
+	 */
 	private async checkoutRemote(shallow: boolean) {
 		const { branch } = this.cfg();
 		try {
 			const tip =
-				(shallow && (await this.partialFetch())) ||
+				(shallow && (await this.partialFetch((p, oid) => this.adoptLocal(p, oid)))) ||
 				(await git.fetch({ ...this.base, ...this.remote, ref: branch, singleBranch: true, tags: false, depth: shallow ? 1 : undefined })).fetchHead;
 			if (!tip) return;
 			await git.writeRef({ ...this.base, ref: `refs/heads/${branch}`, value: tip, force: true });
 			this.onProgress("Git: 볼트에 파일 쓰는 중…");
-			await git.checkout({ ...this.base, ref: branch, force: true });
+			const toWrite = await this.indexLocalFiles(tip);
+			if (toWrite === null) await git.checkout({ ...this.base, ref: branch, force: true, ...BATCHED });
+			else if (toWrite.length) await git.checkout({ ...this.base, ref: branch, filepaths: toWrite, force: true, ...BATCHED });
 		} finally {
 			this.onProgress(null);
 		}
+	}
+
+	/**
+	 * 원격 tip의 파일 중 볼트에 이미 있는 것을 index에 넣고(내용이 다르면 원격 내용으로 — 작업 파일은 그대로), 볼트에 없는 경로를 반환한다.
+	 * 볼트에 해당 파일이 하나도 없으면 null (전부 checkout).
+	 */
+	private async indexLocalFiles(tip: string): Promise<string[] | null> {
+		const entries = (await git.walk({
+			...this.base,
+			trees: [git.TREE({ ref: tip }), git.STAGE()],
+			map: async (path, [t, s]) => {
+				if (!t || (await t.type()) !== "blob") return undefined;
+				return { path, oid: await t.oid(), mode: await t.mode(), staged: s ? await s.oid() : undefined };
+			},
+		})) as { path: string; oid: string; mode: number; staged?: string }[];
+		const missing: string[] = [];
+		let found = false;
+		for (const e of entries) {
+			if (e.staged === e.oid) {
+				found = true; // adoptLocal이 이미 넣음
+				continue;
+			}
+			// .obsidian 설정은 Obsidian이 볼트를 열 때 기본값으로 만들어 두므로 원격 것으로 덮어쓴다
+			if (e.path.startsWith(".obsidian/") || !(await this.exists(e.path))) {
+				missing.push(e.path);
+				continue;
+			}
+			found = true;
+			if (!(await this.adoptLocal(e.path, e.oid))) await git.updateIndex({ ...this.base, filepath: e.path, oid: e.oid, mode: e.mode, add: true, force: true });
+		}
+		return found ? missing : null;
 	}
 
 	async changes(): Promise<WorkChange[]> {
@@ -436,27 +519,97 @@ export class IsoBackend implements GitBackend {
 		// 로컬이 앞서 있기만 하면(원격 새 커밋 없음) merge/checkout은 할 일이 없다 — checkout은 vault 전체를 훑으므로 비싸다
 		if (await git.isDescendent({ ...this.base, oid: head, ancestor: theirs, depth: -1 }).catch(() => false)) return [];
 		await this.assertNoOverlap(head, theirs);
+		const message = `Merge remote-tracking branch 'origin/${branch}'`;
 		try {
-			await git.merge({
-				...this.base,
-				ours: branch,
-				theirs,
-				author: this.author,
-				abortOnConflict: false,
-				allowUnrelatedHistories: true,
-				message: `Merge remote-tracking branch 'origin/${branch}'`,
-			});
+			// abortOnConflict:false는 충돌 시 결과 트리의 '모든' 파일을 폴더 단위로 동시에 다시 써서 큰 볼트에선 메모리가 터진다
+			await git.merge({ ...this.base, ours: branch, theirs, author: this.author, abortOnConflict: true, allowUnrelatedHistories: true, message });
 		} catch (e) {
-			if (e instanceof git.Errors.MergeConflictError) {
-				await this.fs.writeFile(MERGE_HEAD, theirs + "\n");
-				const rec: ConflictRecord = { paths: e.data.filepaths, markerless: [...e.data.deleteByUs, ...e.data.deleteByTheirs] };
-				await this.fs.writeFile(CONFLICTS, JSON.stringify(rec));
-				return e.data.filepaths;
+			if (!(e instanceof git.Errors.MergeConflictError)) throw e;
+			const rec = await this.writeConflictedMerge(head, theirs);
+			if (!rec.paths.length) {
+				await git.commit({ ...this.base, message, author: this.author, parent: [head, theirs] });
+				return [];
 			}
-			throw e;
+			await this.fs.writeFile(MERGE_HEAD, theirs + "\n");
+			await this.fs.writeFile(CONFLICTS, JSON.stringify(rec));
+			return rec.paths;
 		}
-		await git.checkout({ ...this.base, ref: branch });
+		await git.checkout({ ...this.base, ref: branch, ...BATCHED });
 		return [];
+	}
+
+	/**
+	 * 충돌이 있는 merge를 작업 파일과 index에 반영한다. 원격이 바꾼 파일만 하나씩:
+	 * 원격만 바꿈 → 원격 것, 양쪽이 겹치지 않게 바꿈 → 자동 병합, 겹침 → 충돌 마커, 한쪽 삭제·바이너리 → 마커 없는 충돌(내 것 유지).
+	 */
+	private async writeConflictedMerge(head: string, theirs: string): Promise<ConflictRecord> {
+		let base: string | null = null;
+		try {
+			base = (await git.findMergeBase({ ...this.base, oids: [head, theirs] }))[0] ?? null;
+		} catch {
+			base = null;
+		}
+		const rec: ConflictRecord = { paths: [], markerless: [] };
+		for (const { path, base: b, ours: o, theirs: t } of await this.threeWay(base, head, theirs)) {
+			if (o?.oid === t?.oid) continue;
+			if (o?.oid === b?.oid) {
+				await this.applyBlob(path, t);
+				continue;
+			}
+			const texts = o && t ? [b ? await this.blobText(b.oid) : "", await this.blobText(o.oid), await this.blobText(t.oid)] : null;
+			if (!texts || texts.includes(null)) {
+				rec.paths.push(path);
+				rec.markerless.push(path);
+				continue;
+			}
+			const regions = buildRegions(texts[0]!, texts[1]!, texts[2]!);
+			applyNonConflicting(regions);
+			const conflicted = regions.some((r) => r.kind === "conflict");
+			await this.fs.writeFile(path, conflicted ? conflictMarkerText(regions) : mergedText(regions));
+			if (conflicted) rec.paths.push(path);
+			else await git.add({ ...this.base, filepath: path });
+		}
+		return rec;
+	}
+
+	/** base(없으면 생략)/ours/theirs 트리에서 theirs가 base와 다르고 ours와도 다른 파일들. 내용은 읽지 않는다. */
+	private async threeWay(base: string | null, ours: string, theirs: string) {
+		type Blob = { oid: string; mode: number } | undefined;
+		const out: { path: string; base: Blob; ours: Blob; theirs: Blob }[] = [];
+		const blob = async (e: git.WalkerEntry | null): Promise<Blob> => (e && (await e.type()) === "blob" ? { oid: await e.oid(), mode: await e.mode() } : undefined);
+		await git.walk({
+			...this.base,
+			trees: (base ? [base, ours, theirs] : [ours, theirs]).map((ref) => git.TREE({ ref })),
+			map: async (filepath, entries) => {
+				if (filepath === ".") return true;
+				const [b, o, t] = base ? entries : [null, ...entries];
+				const ot = await t?.oid();
+				if ((base && (await b?.oid()) === ot) || (await o?.oid()) === ot) return null; // 원격이 안 바꿨거나 양쪽이 같음
+				if ([await b?.type(), await o?.type(), await t?.type()].includes("tree")) return true;
+				out.push({ path: filepath, base: await blob(b), ours: await blob(o), theirs: await blob(t) });
+				return true;
+			},
+		});
+		return out;
+	}
+
+	/** 작업 파일과 index를 blob으로 (없으면 삭제) */
+	private async applyBlob(path: string, blob: { oid: string; mode: number } | undefined) {
+		if (!blob) {
+			if (await this.exists(path)) await this.fs.unlink(path);
+			await git.remove({ ...this.base, filepath: path });
+			return;
+		}
+		const slash = path.lastIndexOf("/");
+		if (slash > 0) await this.mkdirp(path.slice(0, slash));
+		await this.fs.writeFile(path, (await git.readBlob({ ...this.base, oid: blob.oid })).blob);
+		await git.updateIndex({ ...this.base, filepath: path, oid: blob.oid, mode: blob.mode, add: true });
+	}
+
+	/** 텍스트면 내용, 바이너리(NUL 포함)면 null */
+	private async blobText(oid: string): Promise<string | null> {
+		const { blob } = await git.readBlob({ ...this.base, oid });
+		return blob.subarray(0, 8000).includes(0) ? null : decoder.decode(blob);
 	}
 
 	/**

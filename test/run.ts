@@ -98,6 +98,19 @@ async function main() {
 	await sync(B.b, "B small");
 	const smallPush = Math.max(0, ...server.requests.slice(beforeSmall).filter((r) => r.path.endsWith("git-receive-pack")).map((r) => r.bytes));
 	check("shallow B: small push sends only the change", smallPush > 0 && smallPush < 64 * 1024, `push=${(smallPush / 1024).toFixed(0)}KB`);
+
+	// 2-1. 기기 X: 원격과 같은 파일이 이미 있는 vault(.git 없음, 예: iCloud로 받아 둔 것)에서 connect
+	const X = isoDevice("X");
+	fs.cpSync(A.root, X.root, { recursive: true, filter: (src) => !src.includes(`${path.sep}.git`) });
+	write(X.root, "notes/hello.md", "local edit\n");
+	const beforeC = server.requests.length;
+	await X.b.connect();
+	const cFetch = server.requests.slice(beforeC).filter((r) => r.path.endsWith("git-upload-pack")).reduce((s, r) => s + r.resBytes, 0);
+	check("existing vault: same files are not downloaded again", cFetch < 1024 * 1024, `fetched=${(cFetch / 1024).toFixed(0)}KB`);
+	check("existing vault: local edit kept", fs.readFileSync(path.join(X.root, "notes/hello.md"), "utf8") === "local edit\n");
+	check("existing vault: missing file written", fs.existsSync(path.join(X.root, "notes/small.md")));
+	const cChanges = (await X.b.changes()).map((c) => `${c.type}:${c.path}`);
+	check("existing vault: only the local edit shows", JSON.stringify(cChanges) === '["modified:notes/hello.md"]', JSON.stringify(cChanges));
 	await A.b.pull();
 
 	// 3. 서로 다른 파일 수정 → 자동 병합

@@ -28,6 +28,8 @@ export interface PartialFetchOptions {
 	onAuth: () => { username: string; password: string } | undefined;
 	branch: string;
 	onProgress?: (msg: string) => void;
+	/** 받기 전에 볼트에 이미 있는 같은 내용 파일로 blob을 채운다 (채웠으면 true) — 기존 볼트를 연결할 때 다시 받지 않도록 */
+	reuse?: (path: string, oid: string) => Promise<boolean>;
 }
 
 /** 이보다 작은 파일은 첫 요청에 한꺼번에 받는다 (노트 대부분) */
@@ -68,12 +70,18 @@ export async function partialFetch(o: PartialFetchOptions): Promise<string | nul
 	}
 
 	// 2) 큰 파일: tip 트리에서 아직 없는 blob만 하나씩
-	const blobs = new Set<string>();
-	await listBlobs(base, (await git.readCommit({ ...base, oid: tip, cache })).commit.tree, cache, blobs);
+	const blobs = new Map<string, string>();
+	await listBlobs(base, (await git.readCommit({ ...base, oid: tip, cache })).commit.tree, cache, blobs, "");
 	const missing: string[] = [];
-	for (const oid of blobs) {
+	let checked = 0;
+	for (const [oid, path] of blobs) {
 		if (await exists(o.fs, `.git/objects/${oid.slice(0, 2)}/${oid.slice(2)}`)) continue;
-		if (!(await hasObject(base, oid, cache))) missing.push(oid);
+		if (await hasObject(base, oid, cache)) continue;
+		if (o.reuse) {
+			if (checked++ % 20 === 0) o.onProgress?.(`Git: 볼트에 있는 파일 확인 중… (${checked}개)`);
+			if (await o.reuse(path, oid)) continue;
+		}
+		missing.push(oid);
 	}
 	let bytes = 0;
 	for (let i = 0; i < missing.length; i++) {
@@ -219,11 +227,13 @@ async function storePack(o: PartialFetchOptions, pack: Uint8Array): Promise<stri
 	return path;
 }
 
-async function listBlobs(base: { fs: git.FsClient; dir: string }, treeOid: string, cache: object, out: Set<string>) {
+/** tip 트리의 blob oid → 경로 (같은 내용이 여러 곳이면 첫 경로) */
+async function listBlobs(base: { fs: git.FsClient; dir: string }, treeOid: string, cache: object, out: Map<string, string>, prefix: string) {
 	const { tree } = await git.readTree({ ...base, oid: treeOid, cache });
 	for (const e of tree) {
-		if (e.type === "tree") await listBlobs(base, e.oid, cache, out);
-		else if (e.type === "blob") out.add(e.oid);
+		const path = prefix + e.path;
+		if (e.type === "tree") await listBlobs(base, e.oid, cache, out, path + "/");
+		else if (e.type === "blob" && !out.has(e.oid)) out.set(e.oid, path);
 	}
 }
 
