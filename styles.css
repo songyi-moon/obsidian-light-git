@@ -1,0 +1,642 @@
+/* Light Git — IntelliJ 느낌의 차분한 UI. 색은 모두 Obsidian 테마 변수 → 라이트/다크 자동 대응 */
+
+/* ---------- 공통 ---------- */
+.light-git-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+}
+.light-git-icon svg {
+	width: 15px;
+	height: 15px;
+}
+.light-git-empty,
+.light-git-hint {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	padding: 8px 10px;
+}
+.light-git-empty button {
+	margin-top: 8px;
+}
+
+/* ---------- 커밋 메시지 모달 ---------- */
+.light-git-commit-input {
+	width: 100%;
+	font-size: var(--font-ui-medium);
+	margin-bottom: 6px;
+}
+
+/* ---------- Source Control 뷰 (IntelliJ Commit 창) ---------- */
+.light-git-view.view-content {
+	padding: 0;
+}
+.light-git-view {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	font-size: var(--font-ui-small);
+}
+.light-git-toolbar {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+.light-git-toolbar-title {
+	flex: 1;
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+}
+.light-git-list {
+	flex: 1;
+	overflow-y: auto;
+	padding: 4px 0;
+}
+.light-git-group-head {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	height: 26px;
+	padding: 0 8px 0 4px;
+	cursor: pointer;
+	user-select: none;
+	color: var(--text-normal);
+}
+.light-git-group-head:hover {
+	background: var(--background-modifier-hover);
+}
+.light-git-chevron {
+	display: inline-flex;
+	color: var(--text-faint);
+}
+.light-git-chevron svg {
+	width: 14px;
+	height: 14px;
+}
+.light-git-group-title {
+	font-weight: var(--font-semibold);
+}
+.light-git-group-count {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+.light-git-group.is-conflict .light-git-group-title {
+	color: var(--text-error);
+}
+.light-git-group.is-collapsed .light-git-group-body {
+	display: none;
+}
+.light-git-check {
+	margin: 0 2px;
+	width: 14px;
+	height: 14px;
+	cursor: pointer;
+	flex: none;
+}
+.light-git-file {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	height: 26px;
+	padding: 0 8px 0 24px;
+	cursor: pointer;
+}
+.light-git-file:hover {
+	background: var(--background-modifier-hover);
+}
+.light-git-file-name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+/* IntelliJ처럼 상태를 파일명 색으로 */
+.type-modified .light-git-file-base { color: var(--color-blue); }
+.type-added .light-git-file-base { color: var(--color-green); }
+.type-deleted .light-git-file-base { color: var(--text-faint); text-decoration: line-through; }
+.type-conflict .light-git-file-base { color: var(--text-error); }
+.light-git-file-dir {
+	margin-left: 6px;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+.light-git-file-actions {
+	flex: none;
+	display: flex;
+	gap: 0;
+}
+.light-git-file-actions .clickable-icon {
+	padding: 2px 4px;
+}
+/* 데스크톱은 hover 때만, 모바일(터치)은 항상 보이게 */
+body:not(.is-mobile) .light-git-file:not(:hover) .light-git-file-actions {
+	visibility: hidden;
+}
+.light-git-commit-box {
+	flex: none;
+	border-top: 1px solid var(--background-modifier-border);
+	padding: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	background: var(--background-primary);
+}
+.light-git-message {
+	width: 100%;
+	resize: vertical;
+	min-height: 4.2em;
+	font-size: var(--font-ui-small);
+	font-family: var(--font-interface);
+	line-height: 1.4;
+}
+.light-git-commit-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.light-git-commit-hint {
+	flex: 1;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+.is-mobile .light-git-file,
+.is-mobile .light-git-group-head {
+	height: 34px;
+}
+.light-git-icon.is-active {
+	color: var(--text-accent);
+}
+/* 데스크톱 상태바가 오른쪽 아래에 떠 있어서, 오른쪽 사이드바에선 맨 아래 내용이 가려진다 */
+body:not(.is-mobile) .mod-right-split .light-git-commit-box {
+	padding-bottom: 36px;
+}
+body:not(.is-mobile) .mod-right-split .light-git-view > .light-git-list:last-child {
+	padding-bottom: 32px;
+}
+
+/* History */
+.light-git-commit {
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+.light-git-commit-head {
+	padding: 6px 10px;
+	cursor: pointer;
+}
+.light-git-commit-head:hover {
+	background: var(--background-modifier-hover);
+}
+.light-git-commit-msg {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.light-git-commit-meta {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+.light-git-commit-files .light-git-file {
+	padding-left: 18px;
+}
+.light-git-more {
+	margin: 8px auto;
+	display: block;
+}
+
+/* ---------- Diff 모달 ---------- */
+.light-git-diff-modal {
+	width: min(1000px, 95vw);
+}
+.light-git-diff {
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	line-height: 1.55;
+	overflow-x: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+}
+.light-git-diff-line {
+	display: flex;
+	white-space: pre;
+}
+.light-git-diff-line.add { background: rgba(var(--color-green-rgb), 0.12); }
+.light-git-diff-line.del { background: rgba(var(--color-red-rgb), 0.1); }
+.light-git-ln {
+	flex: none;
+	width: 3.2em;
+	padding-right: 8px;
+	text-align: right;
+	color: var(--text-faint);
+	background: var(--background-secondary);
+	user-select: none;
+}
+.light-git-sign {
+	flex: none;
+	width: 1.4em;
+	text-align: center;
+	color: var(--text-muted);
+	user-select: none;
+}
+.light-git-code {
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+.light-git-diff-fold,
+.light-git-merge-fold {
+	color: var(--text-faint);
+	text-align: center;
+	padding: 1px;
+	font-size: var(--font-ui-smaller);
+	background: var(--background-secondary);
+	cursor: pointer;
+	font-family: var(--font-interface);
+}
+.light-git-diff-fold:hover,
+.light-git-merge-fold:hover {
+	color: var(--text-accent);
+}
+.light-git-diff-note {
+	color: var(--text-muted);
+	margin-bottom: 6px;
+	font-family: var(--font-interface);
+}
+/* 보기 전환 [나란히 | 한 줄] */
+.light-git-diff-modal.is-side {
+	width: min(1400px, 96vw);
+}
+.light-git-diff-modes {
+	display: flex;
+	align-items: center;
+	gap: 0;
+	margin-bottom: 8px;
+}
+.light-git-diff-modes button {
+	border-radius: 0;
+	font-size: var(--font-ui-smaller);
+}
+.light-git-diff-modes button:first-child {
+	border-radius: var(--radius-s) 0 0 var(--radius-s);
+}
+.light-git-diff-modes button:nth-child(2) {
+	border-radius: 0 var(--radius-s) var(--radius-s) 0;
+}
+.light-git-diff-modes button.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+.light-git-diff-modes .light-git-diff-note {
+	margin: 0 0 0 12px;
+}
+/* 나란히: [이전 줄번호 | 이전 | 이후 줄번호 | 이후] */
+.light-git-diff-row {
+	display: grid;
+	grid-template-columns: 3.2em minmax(0, 1fr) 3.2em minmax(0, 1fr);
+}
+.light-git-diff-row > .light-git-ln {
+	width: auto;
+}
+.light-git-diff-row > .light-git-ln:nth-child(3) {
+	border-left: 1px solid var(--background-modifier-border);
+}
+.light-git-diff-row > .light-git-code {
+	padding: 0 6px;
+}
+.light-git-diff-row > .del { background: rgba(var(--color-red-rgb), 0.1); }
+.light-git-diff-row > .add { background: rgba(var(--color-green-rgb), 0.12); }
+.light-git-diff-row > .empty { background: var(--background-secondary); }
+
+/* ---------- 머지 모달 (IntelliJ 3단) ---------- */
+.light-git-merge-modal {
+	width: 96vw;
+	max-width: 96vw;
+	height: 92vh;
+	max-height: 92vh;
+}
+.light-git-merge-body.modal-content {
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	padding-bottom: 0;
+}
+.light-git-merge-toolbar {
+	flex: none;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 2px;
+	padding: 2px 0 6px;
+}
+.light-git-tool-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: 26px;
+	padding: 0 8px;
+	background: transparent;
+	box-shadow: none;
+	border: none;
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	cursor: pointer;
+}
+.light-git-tool-btn:hover {
+	background: var(--background-modifier-hover);
+}
+.light-git-tool-icon {
+	display: inline-flex;
+	color: var(--text-muted);
+}
+.light-git-tool-icon svg {
+	width: 14px;
+	height: 14px;
+}
+.light-git-toolbar-sep {
+	width: 1px;
+	height: 16px;
+	margin: 0 4px;
+	background: var(--background-modifier-border);
+}
+.light-git-merge-header,
+.light-git-merge-row {
+	display: grid;
+	grid-template-columns: 1fr 1fr 1fr;
+	gap: 0 10px;
+}
+.light-git-merge-header {
+	flex: none;
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	color: var(--text-muted);
+	padding: 5px 0;
+	border-top: 1px solid var(--background-modifier-border);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+.light-git-merge-grid {
+	flex: 1;
+	overflow: auto;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	line-height: 1.6;
+	padding: 4px 0;
+}
+.light-git-merge-cell {
+	min-width: 0;
+	position: relative;
+}
+.light-git-merge-line {
+	display: flex;
+	min-height: 1.6em;
+}
+.light-git-merge-ln {
+	flex: none;
+	width: 3em;
+	padding-right: 8px;
+	text-align: right;
+	color: var(--text-faint);
+	user-select: none;
+}
+.light-git-merge-code {
+	flex: 1;
+	min-width: 0;
+	white-space: pre-wrap;
+	word-break: break-word;
+	padding-right: 4px;
+}
+.light-git-merge-line.is-empty {
+	height: 0;
+	min-height: 0;
+}
+
+/* 변경 블록: 옅은 바탕 + 위아래 경계선 (IntelliJ diff 블록). 색은 셀의 --lg-rgb로 정한다 */
+.light-git-merge-row:not(.is-stable) {
+	margin: 1px 0;
+}
+.light-git-merge-cell.change-modified { --lg-rgb: var(--color-blue-rgb); }
+.light-git-merge-cell.change-added { --lg-rgb: var(--color-green-rgb); }
+.light-git-merge-cell.change-deleted { --lg-rgb: var(--mono-rgb-100, 128, 128, 128); }
+.light-git-merge-cell.change-conflict { --lg-rgb: var(--color-red-rgb); }
+.light-git-merge-cell[class*="change-"]:not(.change-none) .light-git-merge-lines,
+.light-git-merge-cell[class*="change-"]:not(.change-none) .light-git-merge-result {
+	background: rgba(var(--lg-rgb), 0.1);
+	box-shadow: inset 0 1px rgba(var(--lg-rgb), 0.45), inset 0 -1px rgba(var(--lg-rgb), 0.45);
+}
+.light-git-merge-cell.change-deleted .light-git-merge-lines {
+	min-height: 2px;
+}
+/* 처리한 영역은 색을 빼서 남은 것만 눈에 띄게 */
+.light-git-merge-row.is-resolved .light-git-merge-lines {
+	background: none !important;
+	box-shadow: none !important;
+	opacity: 0.55;
+}
+
+/* 셀 = 줄들 + 거터. 원격 칸은 거터가 왼쪽(결과 쪽)에 오도록 반전 */
+.light-git-merge-side {
+	display: flex;
+	align-items: flex-start;
+	gap: 2px;
+}
+.col-theirs .light-git-merge-side {
+	flex-direction: row-reverse;
+}
+.light-git-merge-side > .light-git-merge-lines,
+.light-git-merge-side > .light-git-merge-result {
+	flex: 1;
+	min-width: 0;
+}
+.light-git-merge-gutter {
+	flex: none;
+	width: 44px;
+	display: flex;
+	justify-content: flex-end;
+}
+.col-theirs .light-git-merge-gutter {
+	justify-content: flex-start;
+}
+/* 동일 영역도 거터 폭만큼 들여서 위아래 줄을 맞춘다 */
+.is-stable .col-theirs {
+	padding-left: 46px;
+}
+.is-stable .col-ours {
+	padding-right: 46px;
+}
+.light-git-gutter-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 1.6em;
+	padding: 0;
+	background: transparent;
+	box-shadow: none;
+	border: none;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+.light-git-gutter-btn svg {
+	width: 14px;
+	height: 14px;
+}
+.light-git-gutter-btn:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+.light-git-gutter-btn.is-apply {
+	color: var(--text-accent);
+}
+.light-git-merge-mark {
+	display: inline-flex;
+	align-items: center;
+	height: 1.6em;
+	padding: 0 3px;
+	color: var(--text-faint);
+}
+.light-git-merge-mark svg {
+	width: 13px;
+	height: 13px;
+}
+.light-git-merge-result {
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	line-height: 1.6;
+	resize: none;
+	padding: 0 4px 0 calc(3em + 8px);
+	min-height: 1.6em;
+	border: none;
+	border-radius: 0;
+	background: transparent;
+	overflow: hidden;
+	white-space: pre-wrap;
+}
+.light-git-merge-result:focus {
+	box-shadow: inset 0 0 0 1px var(--interactive-accent) !important;
+}
+.light-git-merge-reset {
+	flex: none;
+}
+.light-git-merge-footer {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 0;
+	border-top: 1px solid var(--background-modifier-border);
+}
+.light-git-merge-summary {
+	flex: 1;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+.light-git-merge-summary.is-done {
+	color: var(--color-green);
+}
+.light-git-pill {
+	padding: 0 7px;
+	border-radius: 9px;
+	font-size: var(--font-ui-smaller);
+	background: rgba(var(--color-blue-rgb), 0.15);
+	color: var(--color-blue);
+}
+.light-git-pill.is-conflict {
+	background: rgba(var(--color-red-rgb), 0.15);
+	color: var(--text-error);
+}
+.light-git-merge-footer .is-disabled {
+	opacity: 0.5;
+}
+.light-git-merge-choice-buttons {
+	display: flex;
+	gap: 8px;
+}
+
+/* 터치 기기(폰·태블릿): 손가락으로 누르기 쉬운 크기 */
+.is-mobile .light-git-gutter-btn {
+	width: 28px;
+	height: 28px;
+}
+.is-mobile .light-git-merge-gutter {
+	width: 58px;
+}
+.is-mobile .is-stable .col-theirs {
+	padding-left: 60px;
+}
+.is-mobile .is-stable .col-ours {
+	padding-right: 60px;
+}
+.is-mobile .light-git-tool-btn {
+	height: 34px;
+}
+
+/* 폰·폰 가로·태블릿 세로(900px 미만): 3단은 너무 좁으므로 영역마다 카드로 세로 배치, 동일 영역은 결과만 */
+@media (max-width: 900px) {
+	.light-git-merge-header {
+		display: none;
+	}
+	.light-git-merge-toolbar .light-git-tool-btn span:not(.light-git-tool-icon) {
+		font-size: var(--font-ui-smaller);
+	}
+	.light-git-merge-row {
+		grid-template-columns: 1fr;
+	}
+	.light-git-merge-row:not(.is-stable) {
+		border: 1px solid var(--background-modifier-border);
+		border-radius: var(--radius-m);
+		padding: 6px;
+		margin: 8px 0;
+		gap: 4px;
+	}
+	.light-git-merge-row.is-stable .col-ours,
+	.light-git-merge-row.is-stable .col-theirs {
+		display: none;
+	}
+	.light-git-merge-row:not(.is-stable) .light-git-merge-cell::before {
+		content: attr(data-label);
+		display: block;
+		font-family: var(--font-interface);
+		font-size: var(--font-ui-smaller);
+		color: var(--text-muted);
+		margin: 2px 0;
+	}
+	.light-git-merge-row:not(.is-stable) .col-result {
+		order: 3;
+	}
+	.light-git-merge-row:not(.is-stable) .col-theirs {
+		order: 2;
+	}
+	/* 카드 안에서는 거터를 항상 오른쪽에, 동일 영역 들여쓰기는 없앤다 */
+	.col-theirs .light-git-merge-side {
+		flex-direction: row;
+	}
+	.col-theirs .light-git-merge-gutter {
+		justify-content: flex-end;
+	}
+	.is-stable .col-theirs,
+	.is-stable .col-ours,
+	.is-mobile .is-stable .col-theirs,
+	.is-mobile .is-stable .col-ours {
+		padding: 0;
+	}
+	.light-git-merge-ln {
+		width: 2.2em;
+	}
+	.light-git-merge-result {
+		padding-left: calc(2.2em + 8px);
+	}
+	.light-git-gutter-btn,
+	.is-mobile .light-git-gutter-btn {
+		width: 34px;
+		height: 30px;
+	}
+	.light-git-merge-gutter,
+	.is-mobile .light-git-merge-gutter {
+		width: auto;
+		gap: 4px;
+	}
+}

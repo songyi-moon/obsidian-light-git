@@ -1,0 +1,361 @@
+import "./polyfill";
+import { debounce, FileSystemAdapter, Notice, Platform, Plugin, TFile } from "obsidian";
+import { CommitMessageModal } from "./commitModal";
+import { IsoBackend } from "./git/isoBackend";
+import { NativeBackend } from "./git/nativeBackend";
+import { ObsidianFs } from "./git/obsidianFs";
+import { obsidianHttp } from "./git/obsidianHttp";
+import type { CommitInfo, GitBackend, GitConfig, WorkChange } from "./git/types";
+import { MergeModal, type MergeHost } from "./merge/mergeModal";
+import { DEFAULT_SETTINGS, LightGitSettingTab, type LightGitSettings } from "./settings";
+import { DiffModal } from "./ui/diffModal";
+import { HISTORY_VIEW, HistoryView } from "./ui/historyView";
+import { SOURCE_CONTROL_VIEW, SourceControlView } from "./ui/sourceControlView";
+
+const TOKEN_KEY = "light-git-token";
+
+const pad = (n: number) => String(n).padStart(2, "0");
+function now(withDate = true): string {
+	const d = new Date();
+	const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+	return withDate ? `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${time}` : time;
+}
+
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+export default class LightGitPlugin extends Plugin implements MergeHost {
+	settings!: LightGitSettings;
+	private backend: GitBackend | null = null;
+	private busy = false;
+	/** 충돌 안내는 자동으로 닫히지 않으므로, 충돌을 다 해결하면 직접 닫는다 */
+	private conflictNotice: Notice | null = null;
+	private statusEl: HTMLElement | null = null;
+	private autoSyncTimer: number | null = null;
+
+	async onload() {
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		this.addSettingTab(new LightGitSettingTab(this.app, this));
+		this.registerView(SOURCE_CONTROL_VIEW, (leaf) => new SourceControlView(leaf, this));
+		this.registerView(HISTORY_VIEW, (leaf) => new HistoryView(leaf, this));
+		if (!Platform.isMobile) this.statusEl = this.addStatusBarItem();
+		this.setStatus("Git: 대기");
+
+		this.addRibbonIcon("refresh-cw", "Git 동기화", () => this.manualSync());
+		this.addRibbonIcon("git-branch", "Git 변경 사항", () => this.activateView(SOURCE_CONTROL_VIEW));
+		this.addCommand({ id: "sync", name: "커밋 & 동기화", callback: () => this.manualSync() });
+		this.addCommand({ id: "sync-default", name: "커밋 & 동기화 (기본 메시지)", callback: () => this.sync() });
+		this.addCommand({ id: "pull", name: "Pull", callback: () => this.pullCommand() });
+		this.addCommand({ id: "push", name: "Push", callback: () => this.pushCommand() });
+		this.addCommand({ id: "connect", name: "원격 저장소 연결", callback: () => this.connect() });
+		this.addCommand({ id: "open-source-control", name: "변경 사항(Source Control) 열기", callback: () => this.activateView(SOURCE_CONTROL_VIEW) });
+		this.addCommand({ id: "open-history", name: "History 열기", callback: () => this.activateHistory() });
+		this.addCommand({ id: "resolve-conflicts", name: "충돌 해결", callback: () => this.resolveNextConflict() });
+
+		// 파일이 바뀌면 열려 있는 Git 뷰를 갱신 (연속 저장은 묶어서 한 번)
+		const refresh = debounce(() => this.refreshViews(), 1500, true);
+		for (const ev of ["modify", "create", "delete", "rename"] as const) {
+			// 저장소 폴더 밖(.obsidian 등) 변경은 무시
+			this.registerEvent(this.app.vault.on(ev as "rename", (f, oldPath) => (this.inRepo(f.path) || (oldPath && this.inRepo(oldPath))) && refresh()));
+		}
+
+		this.app.workspace.onLayoutReady(() => {
+			if (this.settings.pullOnStartup && this.settings.remoteUrl) {
+				this.run("pull", async (b) => ((await b.isRepo()) ? this.afterPull(await b.pull()) : null), true);
+			}
+			this.scheduleAutoSync();
+		});
+	}
+
+	onunload() {
+		if (this.autoSyncTimer !== null) window.clearInterval(this.autoSyncTimer);
+	}
+
+	async saveSettings() {
+		await this.saveData(this.settings);
+	}
+
+	// 토큰은 data.json(= vault 안, git에 올라감)이 아니라 기기별 localStorage에 둔다.
+	getToken(): string {
+		return (this.app.loadLocalStorage(TOKEN_KEY) as string | null) ?? "";
+	}
+
+	setToken(token: string) {
+		this.app.saveLocalStorage(TOKEN_KEY, token || null);
+	}
+
+	private gitConfig(): GitConfig {
+		const s = this.settings;
+		return {
+			remoteUrl: s.remoteUrl,
+			branch: s.branch || "main",
+			username: s.username,
+			token: this.getToken(),
+			authorName: s.authorName,
+			authorEmail: s.authorEmail,
+			chunkBytes: s.chunkMB * 1024 * 1024,
+		};
+	}
+
+	/** git 저장소로 쓰는 vault 하위 폴더 ("" = vault 전체) */
+	repoDir(): string {
+		return (this.settings.repoFolder ?? "").trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+	}
+
+	/** 저장소 기준 경로 → vault 경로 */
+	vaultPath(repoPath: string): string {
+		const dir = this.repoDir();
+		return dir ? `${dir}/${repoPath}` : repoPath;
+	}
+
+	private inRepo(vaultPath: string): boolean {
+		const dir = this.repoDir();
+		return !dir || vaultPath === dir || vaultPath.startsWith(dir + "/");
+	}
+
+	resetBackend() {
+		this.backend = null;
+	}
+
+	backendName(): string {
+		return this.backend?.name ?? "(아직 선택 안 됨)";
+	}
+
+	isBusy(): boolean {
+		return this.busy;
+	}
+
+	async getBackend(): Promise<GitBackend> {
+		if (this.backend) return this.backend;
+		const adapter = this.app.vault.adapter;
+		const choice = this.settings.backend;
+		const dir = this.repoDir();
+		if (dir && !(await adapter.exists(dir))) await adapter.mkdir(dir);
+		if (choice !== "isomorphic" && Platform.isDesktopApp && adapter instanceof FileSystemAdapter) {
+			const cwd = dir ? `${adapter.getBasePath()}/${dir}` : adapter.getBasePath();
+			if (await NativeBackend.available(cwd)) {
+				this.backend = new NativeBackend(cwd, () => this.gitConfig());
+				return this.backend;
+			}
+			if (choice === "native") throw new Error("git 실행 파일을 찾을 수 없습니다.");
+		}
+		this.backend = new IsoBackend(new ObsidianFs(adapter, dir), obsidianHttp, () => this.gitConfig());
+		return this.backend;
+	}
+
+	scheduleAutoSync() {
+		if (this.autoSyncTimer !== null) window.clearInterval(this.autoSyncTimer);
+		this.autoSyncTimer = null;
+		const min = this.settings.autoSyncMinutes;
+		if (min > 0) {
+			this.autoSyncTimer = window.setInterval(() => this.sync(undefined, true), min * 60 * 1000);
+			this.registerInterval(this.autoSyncTimer);
+		}
+	}
+
+	private setStatus(text: string) {
+		this.statusEl?.setText(text);
+	}
+
+	defaultMessage(numFiles: number): string {
+		const s = this.settings;
+		return s.commitTemplate
+			.replace(/\{\{date\}\}/g, now())
+			.replace(/\{\{device\}\}/g, s.deviceName || (Platform.isMobile ? "mobile" : "desktop"))
+			.replace(/\{\{numFiles\}\}/g, String(numFiles));
+	}
+
+	/** 충돌이 났으면 변경 사항 뷰를 열어 바로 해결할 수 있게 한다 */
+	private afterPull(conflicts: string[]): string {
+		if (!conflicts.length) return "pull 완료";
+		this.activateView(SOURCE_CONTROL_VIEW);
+		return `충돌 ${conflicts.length}건 — 'Git 변경 사항'에서 파일을 눌러 해결하세요:\n${conflicts.join("\n")}`;
+	}
+
+	/** 공통 실행기: 동시 실행 방지 + 상태 표시 + 에러 알림. 성공 여부를 반환. */
+	async run(label: string, fn: (b: GitBackend) => Promise<string | null>, quiet = false): Promise<boolean> {
+		if (this.busy) {
+			if (!quiet) new Notice("Git 작업이 이미 진행 중입니다.");
+			return false;
+		}
+		this.busy = true;
+		this.setStatus(`Git: ${label}…`);
+		let ok = false;
+		try {
+			const result = await fn(await this.getBackend());
+			if (result?.startsWith("충돌")) {
+				this.conflictNotice?.hide();
+				this.conflictNotice = new Notice(result, 0);
+			} else if (result) new Notice(result, 4000);
+			this.setStatus(`Git: ${now(false)} ${label} 완료`);
+			ok = true;
+		} catch (e) {
+			console.error("[light-git]", e);
+			new Notice(`Git ${label} 실패: ${errorText(e)}`, 10000);
+			this.setStatus(`Git: ${label} 실패`);
+		} finally {
+			this.busy = false;
+		}
+		this.refreshViews();
+		return ok;
+	}
+
+	connect() {
+		return this.run("연결", (b) => b.connect());
+	}
+
+	pullCommand() {
+		return this.run("pull", async (b) => this.afterPull(await b.pull()));
+	}
+
+	pushCommand() {
+		return this.run("push", async (b) => (await b.push(), "push 완료"));
+	}
+
+	/** 수동 동기화: 설정에 따라 메시지 입력창을 띄운다. 스테이징된 파일이 있으면 그것만 커밋. */
+	async manualSync() {
+		if (this.busy) return void new Notice("Git 작업이 이미 진행 중입니다.");
+		let changes: WorkChange[] = [];
+		try {
+			const b = await this.getBackend();
+			if (await b.isRepo()) changes = await b.changes();
+		} catch (e) {
+			console.error("[light-git]", e);
+		}
+		const stagedOnly = changes.some((c) => c.staged);
+		const count = stagedOnly ? changes.filter((c) => c.staged).length : changes.length;
+		// 커밋할 게 없거나 입력창을 끈 경우 바로 동기화
+		if (count === 0 || !this.settings.askMessageOnManualSync) return this.sync(undefined, false, stagedOnly);
+		new CommitMessageModal(this.app, this.defaultMessage(count), count, (msg) => this.sync(msg, false, stagedOnly)).open();
+	}
+
+	stage(paths: string[]) {
+		return this.run("스테이징", async (b) => (await b.stage(paths), null), true);
+	}
+
+	unstage(paths: string[]) {
+		return this.run("스테이징 해제", async (b) => (await b.unstage(paths), null), true);
+	}
+
+	/** commit → pull(merge) → push. stagedOnly면 스테이징된 파일만 커밋 (자동 동기화는 항상 전체). */
+	sync(message?: string, quiet = false, stagedOnly = false): Promise<boolean> {
+		return this.run(
+			"동기화",
+			async (b) => {
+				if (!(await b.isRepo())) return quiet ? null : "먼저 설정에서 '원격 저장소 연결'을 실행하세요.";
+				// 기본 메시지의 {{numFiles}}는 커밋할 때 센다 (상태 확인을 두 번 하지 않으려고)
+				const msg = message ?? ((n: number) => this.defaultMessage(n));
+				const committed = await b.commit(msg, stagedOnly);
+				const conflicts = await b.pull();
+				if (conflicts.length) return this.afterPull(conflicts);
+				await b.push();
+				return quiet && committed === 0 ? null : `동기화 완료 (커밋 ${committed}개)`;
+			},
+			quiet,
+		);
+	}
+
+	// ---------- 뷰 ----------
+
+	async activateView(type: string) {
+		const { workspace } = this.app;
+		let leaf = workspace.getLeavesOfType(type)[0];
+		if (!leaf) {
+			leaf = workspace.getRightLeaf(false)!;
+			await leaf.setViewState({ type, active: true });
+		}
+		workspace.revealLeaf(leaf);
+	}
+
+	activateHistory() {
+		return this.activateView(HISTORY_VIEW);
+	}
+
+	refreshViews() {
+		if (this.busy) return;
+		for (const type of [SOURCE_CONTROL_VIEW, HISTORY_VIEW]) {
+			for (const leaf of this.app.workspace.getLeavesOfType(type)) {
+				const view = leaf.view;
+				if (view instanceof SourceControlView || view instanceof HistoryView) view.refresh();
+			}
+		}
+	}
+
+	openFile(path: string) {
+		const file = this.app.vault.getAbstractFileByPath(this.vaultPath(path));
+		if (file instanceof TFile) this.app.workspace.getLeaf(false).openFile(file);
+		else new Notice("Obsidian에서 열 수 없는 파일입니다 (숨김 폴더 등).");
+	}
+
+	async openChangeDiff(path: string) {
+		try {
+			const b = await this.getBackend();
+			const adapter = this.app.vault.adapter;
+			const before = await b.readAt("HEAD", path);
+			const vp = this.vaultPath(path);
+			const after = (await adapter.exists(vp)) ? await adapter.read(vp) : null;
+			new DiffModal(this.app, `${path} (마지막 커밋 → 현재)`, before, after).open();
+		} catch (e) {
+			new Notice(`diff 실패: ${errorText(e)}`);
+		}
+	}
+
+	async openCommitDiff(c: CommitInfo, path: string) {
+		try {
+			const b = await this.getBackend();
+			const before = c.parent ? await b.readAt(c.parent, path) : null;
+			const after = await b.readAt(c.oid, path);
+			new DiffModal(this.app, `${path} @ ${c.oid.slice(0, 7)}`, before, after).open();
+		} catch (e) {
+			new Notice(`diff 실패: ${errorText(e)}`);
+		}
+	}
+
+	discard(path: string) {
+		return this.run("되돌리기", async (b) => (await b.discard(path), `${path} 변경을 버렸습니다.`));
+	}
+
+	// ---------- 충돌 해결 ----------
+
+	async openMerge(path: string) {
+		try {
+			const b = await this.getBackend();
+			new MergeModal(this.app, this, path, await b.conflictVersions(path)).open();
+		} catch (e) {
+			new Notice(`충돌 정보를 읽지 못했습니다: ${errorText(e)}`);
+		}
+	}
+
+	async resolveNextConflict() {
+		const b = await this.getBackend();
+		const conflicts = (await b.isRepo()) ? await b.conflicts() : [];
+		if (!conflicts.length) return void new Notice("해결할 충돌이 없습니다.");
+		await this.openMerge(conflicts[0]);
+	}
+
+	/** MergeHost: 머지 화면 결과 저장 → 해결 표시 */
+	async saveResolution(repoPath: string, content: string | null): Promise<void> {
+		const { vault } = this.app;
+		const path = this.vaultPath(repoPath);
+		const file = vault.getAbstractFileByPath(path);
+		if (content === null) {
+			if (file instanceof TFile) await vault.delete(file);
+			else if (await vault.adapter.exists(path)) await vault.adapter.remove(path);
+		} else if (file instanceof TFile) {
+			// 에디터에 열려 있어도 즉시 반영되도록 vault API 사용
+			await vault.modify(file, content);
+		} else {
+			const dir = path.slice(0, path.lastIndexOf("/"));
+			if (dir && !(await vault.adapter.exists(dir))) await vault.adapter.mkdir(dir);
+			await vault.adapter.write(path, content);
+		}
+		const b = await this.getBackend();
+		await b.markResolved(repoPath);
+		const left = await b.conflicts();
+		if (!left.length) {
+			this.conflictNotice?.hide();
+			this.conflictNotice = null;
+		}
+		new Notice(left.length ? `해결됨. 남은 충돌 ${left.length}건` : "모든 충돌을 해결했습니다. '커밋 & 동기화'로 머지를 완료하세요.");
+		this.refreshViews();
+	}
+}

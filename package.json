@@ -1,0 +1,29 @@
+{
+  "name": "obsidian-light-git",
+  "version": "0.1.0",
+  "description": "Lightweight Git sync for Obsidian (desktop + iOS)",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "test": "node esbuild.test.mjs && node test/out/run.cjs",
+    "test:ui": "node test/ui/build.mjs && node test/ui/shoot.mjs test/out/ui && node test/ui/shootViews.mjs test/out/ui",
+    "test:all": "npm test && npm run test:ui && npm run build && node test/mobileLoad.cjs"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.24.2",
+    "lucide-static": "^0.460.0",
+    "obsidian": "^1.14.4",
+    "puppeteer-core": "^25.16.0",
+    "tslib": "^2.9.1",
+    "typescript": "5.6"
+  },
+  "dependencies": {
+    "buffer": "^6.0.3",
+    "isomorphic-git": "^1.44.9",
+    "node-diff3": "^3.2.1"
+  }
+}

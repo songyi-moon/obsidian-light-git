@@ -1,0 +1,10 @@
+import { MergeModal } from "../../src/merge/mergeModal";
+(window as any).__notices = [];
+const base = ["# 회의록", "", "참석자: 김, 이", "", "## 안건", "1. 예산", "2. 일정", "3. 채용", "", "## 메모", ...Array.from({ length: 12 }, (_, i) => `- 메모 ${i + 1}`), "", "## 결론", "다음 주 재논의", ""].join("\n");
+const ours = base.replace("참석자: 김, 이", "참석자: 김, 이, 박").replace("2. 일정", "2. 일정 (10월 말로 연기)").replace("다음 주 재논의", "이번 주 금요일 확정");
+const theirs = base.replace("3. 채용", "3. 채용\n4. 워크숍").replace("2. 일정", "2. 일정 — 11월 초").replace("다음 주 재논의", "다음 주 화요일 재논의");
+const saved: Record<string, string | null> = {};
+(window as any).__saved = saved;
+const host = { async saveResolution(path: string, content: string | null) { saved[path] = content; } };
+(window as any).openMerge = () => new MergeModal({} as any, host, "notes/회의록.md", { base, ours, theirs }).open();
+(window as any).openMerge();
