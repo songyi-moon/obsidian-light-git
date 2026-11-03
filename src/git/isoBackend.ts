@@ -1,5 +1,5 @@
 import * as git from "isomorphic-git";
-import { batchClone } from "./batchClone";
+import { partialFetch } from "./partialFetch";
 import { messageText, type CommitInfo, type CommitMessage, type ConflictVersions, type FileChange, type GitBackend, type GitConfig, type WorkChange } from "./types";
 
 /** 분할 push 때 커밋 하나를 가리키는 로컬 전용 임시 ref (원격에는 생기지 않음) */
@@ -119,13 +119,17 @@ export class IsoBackend implements GitBackend {
 		return "원격 저장소를 받아왔습니다.";
 	}
 
+	/** 큰 저장소를 메모리 초과 없이 받는다 (partialFetch 참고). 서버가 지원하지 않으면 null. */
+	private partialFetch(): Promise<string | null> {
+		return partialFetch({ fs: this.fs, dir: this.dir, ...this.remote, branch: this.cfg().branch, onProgress: this.onProgress });
+	}
+
 	/** 로컬 커밋이 없을 때: 원격 브랜치를 그대로 가져와 working tree에 반영 (clone과 동일). */
 	private async checkoutRemote(shallow: boolean) {
-		const { branch, chunkBytes } = this.cfg();
-		// 큰 저장소는 한 번에 받으면 메모리 초과로 앱이 꺼진다 → 지원하는 서버면 분할로 받는다
+		const { branch } = this.cfg();
 		try {
 			const tip =
-				(shallow && (await batchClone({ fs: this.fs, dir: this.dir, ...this.remote, branch, batchBytes: chunkBytes, onProgress: this.onProgress }))) ||
+				(shallow && (await this.partialFetch())) ||
 				(await git.fetch({ ...this.base, ...this.remote, ref: branch, singleBranch: true, tags: false, depth: shallow ? 1 : undefined })).fetchHead;
 			if (!tip) return;
 			await git.writeRef({ ...this.base, ref: `refs/heads/${branch}`, value: tip, force: true });
@@ -421,8 +425,13 @@ export class IsoBackend implements GitBackend {
 			await this.checkoutRemote(true);
 			return [];
 		}
-		const res = await git.fetch({ ...this.base, ...this.remote, ref: branch, singleBranch: true, tags: false });
-		const theirs = res.fetchHead;
+		// isomorphic-git fetch는 로컬 커밋 뒤엔 원격이 공통 지점을 몰라 트리·히스토리 전체를 보낸다 → 앱이 꺼지던 원인
+		let theirs: string | null | undefined;
+		try {
+			theirs = (await this.partialFetch()) ?? (await git.fetch({ ...this.base, ...this.remote, ref: branch, singleBranch: true, tags: false })).fetchHead;
+		} finally {
+			this.onProgress(null);
+		}
 		if (!theirs || theirs === head) return [];
 		// 로컬이 앞서 있기만 하면(원격 새 커밋 없음) merge/checkout은 할 일이 없다 — checkout은 vault 전체를 훑으므로 비싸다
 		if (await git.isDescendent({ ...this.base, oid: head, ancestor: theirs, depth: -1 }).catch(() => false)) return [];

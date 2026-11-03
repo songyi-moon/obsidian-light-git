@@ -92,13 +92,24 @@ async function main() {
 	check("B clone keeps only the tree pack", packsLeft === 1, `packs=${packsLeft}`);
 	check("B clone is shallow", fs.existsSync(path.join(B.root, ".git/shallow")));
 	check("B status clean", (await B.b.changes()).length === 0, JSON.stringify(await B.b.changes()));
+	// shallow clone에서 작은 파일 하나 push → 트리 전체(12MB)가 아니라 변경분만 보내야 한다 (iPhone에서 1개 커밋 후 꺼진 원인 후보)
+	write(B.root, "notes/small.md", "small\n");
+	const beforeSmall = server.requests.length;
+	await sync(B.b, "B small");
+	const smallPush = Math.max(0, ...server.requests.slice(beforeSmall).filter((r) => r.path.endsWith("git-receive-pack")).map((r) => r.bytes));
+	check("shallow B: small push sends only the change", smallPush > 0 && smallPush < 64 * 1024, `push=${(smallPush / 1024).toFixed(0)}KB`);
+	await A.b.pull();
 
 	// 3. 서로 다른 파일 수정 → 자동 병합
 	write(A.root, "notes/a.md", "from A\n");
 	await sync(A.b, "A edit");
 	write(B.root, "notes/b.md", "from B\n");
+	const beforeR3 = server.requests.length;
 	const r3 = await sync(B.b, "B edit");
 	check("B merges A's change cleanly", r3.conflicts.length === 0 && fs.existsSync(path.join(B.root, "notes/a.md")));
+	// 로컬 커밋 뒤 pull: 원격이 공통 지점을 알아야 변경분만 온다 (isomorphic-git fetch는 트리 전체 12MB를 받아 iPhone이 꺼졌다)
+	const r3Fetch = Math.max(0, ...server.requests.slice(beforeR3).filter((r) => r.path.endsWith("git-upload-pack")).map((r) => r.resBytes));
+	check("B pull after local commit fetches only new objects", r3Fetch < 64 * 1024, `max fetch=${(r3Fetch / 1024).toFixed(0)}KB`);
 	await A.b.pull();
 	check("A receives B's change", fs.existsSync(path.join(A.root, "notes/b.md")));
 
