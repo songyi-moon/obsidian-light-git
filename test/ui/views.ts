@@ -82,7 +82,8 @@ const plugin = (backend: unknown): any => ({
 	stagingDone: async () => {},
 	openCopyDiff: (p: string) => (window as any).__calls.push(["openCopyDiff", p]),
 	discard: (p: string) => (window as any).__calls.push(["discard", p]),
-	pullCommand() {}, pushCommand() {}, activateHistory() {}, connect() {}, openMerge() {}, openChangeDiff() {}, openFile() {}, openCommitDiff() {},
+	openChangeDiff: (p: string) => (window as any).__calls.push(["openChangeDiff", p]),
+	pullCommand() {}, pushCommand() {}, activateHistory() {}, connect() {}, openMerge() {}, openFile() {}, openCommitDiff() {},
 });
 const wrap = document.createElement("div");
 wrap.style.cssText = "display:flex;gap:16px;align-items:flex-start";
@@ -113,3 +114,11 @@ import { DiffModal } from "../../src/ui/diffModal";
 const before = ["# 회의록", "", "참석자: 김, 이", ...Array.from({ length: 10 }, (_, i) => `- 메모 ${i + 1}`), "결론: 다음 주", ""].join("\n");
 const after = before.replace("참석자: 김, 이", "참석자: 김, 이, 박").replace("- 메모 5\n", "").replace("결론: 다음 주", "결론: 이번 주 금요일\n추가 줄");
 (window as any).openDiff = () => new DiffModal({} as any, "notes/회의록.md (마지막 커밋 → 현재)", before, after).open();
+const long = Array.from({ length: 30 }, (_, i) => `줄 ${i + 1}`);
+(window as any).openLongDiff = () => new DiffModal({} as any, "notes/긴 파일.md", long.join("\n"), ["첫 줄 수정", ...long.slice(1, -1), "끝 줄 수정"].join("\n")).open();
+
+// 설정 화면
+import { DEFAULT_SETTINGS, LightGitSettingTab } from "../../src/settings";
+const tab = new LightGitSettingTab({} as any, { settings: { ...DEFAULT_SETTINGS }, getToken: () => "", backendName: () => "자동" } as any);
+tab.display();
+(window as any).__settingInputs = () => Array.from(tab.containerEl.querySelectorAll("input"));

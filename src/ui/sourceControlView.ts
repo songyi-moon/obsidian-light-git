@@ -273,7 +273,10 @@ export class SourceControlView extends ItemView {
 	}
 
 	private checkbox(parent: HTMLElement, state: "all" | "some" | "none", onChange: (on: boolean) => void) {
-		const cb = parent.createEl("input", { type: "checkbox", cls: "light-git-check" });
+		// 라벨로 감싸 터치 영역을 넓힌다. 빗나간 탭이 행(diff 열기)이나 머리글(접기)로 가지 않게 막는다
+		const wrap = parent.createEl("label", { cls: "light-git-check-wrap" });
+		wrap.onclick = (e) => e.stopPropagation();
+		const cb = wrap.createEl("input", { type: "checkbox", cls: "light-git-check" });
 		cb.checked = state === "all";
 		cb.indeterminate = state === "some";
 		cb.onclick = (e) => {

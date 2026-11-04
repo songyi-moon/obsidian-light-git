@@ -58,6 +58,45 @@ await page.evaluate(() => window.openMerge());
 await page.evaluate(() => document.querySelector(".light-git-merge-footer button").click());
 check("close without work: closes at once", !(await mergeOpen()) && !(await page.evaluate(() => document.querySelector(".light-git-confirm-text"))));
 
+// 미해결 안내는 모바일에 없는 기호(×)를 말하지 않는다
+await page.evaluate(() => { window.openMerge(); document.querySelector(".light-git-merge-footer .mod-cta").click(); });
+const blockedMsg = await page.evaluate(() => window.__notices.at(-1));
+check("unresolved notice names the buttons", blockedMsg.includes("적용하거나 무시") && !blockedMsg.includes("×"), blockedMsg);
+
+// 초기화: 처리한 내용이 있으면 먼저 묻는다
+const toolbar = (t) => page.evaluate((t) => [...document.querySelectorAll(".light-git-merge-toolbar button")].find((b) => b.textContent.includes(t)).click(), t);
+const confirmBtn = (t) => page.evaluate((t) => [...document.querySelector(".light-git-confirm-text").parentElement.querySelectorAll("button")].find((b) => b.textContent === t).click(), t);
+const asking = () => page.evaluate(() => !!document.querySelector(".light-git-confirm-text"));
+await toolbar("초기화");
+check("reset without work: no question", !(await asking()) && (await summary()) === "충돌 2변경 2남음", await summary());
+await toolbar("충돌 없는");
+await toolbar("초기화");
+check("reset with work: asks first and keeps the work", (await asking()) && (await summary()) === "충돌 2남음", await summary());
+await confirmBtn("취소");
+check("reset cancelled: work stays", !(await asking()) && (await summary()) === "충돌 2남음", await summary());
+await toolbar("초기화");
+await confirmBtn("초기화");
+check("reset confirmed: back to the start", !(await asking()) && (await summary()) === "충돌 2변경 2남음", await summary());
+await page.evaluate(() => document.querySelector(".light-git-merge-footer button").click());
+
+// 파일 단위 선택: 삭제만 먼저 묻고, 내용이 있는 쪽은 바로 저장
+const delPath = "notes/지운 파일.md";
+const choice = (t) => page.evaluate((t) => [...document.querySelectorAll(".light-git-merge-choice-buttons button")].find((b) => b.textContent.includes(t)).click(), t);
+const delSaved = () => page.evaluate((p) => (p in window.__saved ? window.__saved[p] : "unsaved"), delPath);
+await page.evaluate(() => window.openMergeDeleted());
+await choice("내 것 사용");
+check("delete choice: asks first", (await asking()) && (await delSaved()) === "unsaved");
+await confirmBtn("취소");
+check("delete cancelled: nothing saved", (await delSaved()) === "unsaved" && (await mergeOpen()));
+await choice("내 것 사용");
+await confirmBtn("삭제");
+await new Promise((r) => setTimeout(r, 50));
+check("delete confirmed: resolves as deletion", (await delSaved()) === null && !(await mergeOpen()));
+await page.evaluate(() => window.openMergeDeleted());
+await choice("원격 사용");
+await new Promise((r) => setTimeout(r, 50));
+check("keeping content: saves at once", (await delSaved()) === "b\n" && !(await asking()) && !(await mergeOpen()));
+
 // 모바일 (iPhone 폭)
 await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true });
 await page.goto(url + "?r=" + Math.random() + "#mobile");
