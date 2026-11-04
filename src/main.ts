@@ -8,11 +8,20 @@ import { obsidianHttp } from "./git/obsidianHttp";
 import type { CommitInfo, GitBackend, GitConfig, WorkChange } from "./git/types";
 import { MergeModal, type MergeHost } from "./merge/mergeModal";
 import { DEFAULT_SETTINGS, LightGitSettingTab, type LightGitSettings } from "./settings";
+import { ConfirmModal } from "./ui/confirmModal";
 import { DiffModal } from "./ui/diffModal";
 import { HISTORY_VIEW, HistoryView } from "./ui/historyView";
 import { SOURCE_CONTROL_VIEW, SourceControlView } from "./ui/sourceControlView";
 
 const TOKEN_KEY = "light-git-token";
+/** 같은 볼트를 동기화하는 다른 플러그인. 둘이 같이 돌면 같은 파일·저장소를 동시에 고쳐서 꼬인다. */
+const OBSIDIAN_GIT = "obsidian-git";
+
+/** Obsidian 내부 API (공개 타입에 없음). 없거나 바뀌었을 수 있으므로 모두 선택적으로 다룬다. */
+interface PluginManager {
+	enabledPlugins?: Set<string>;
+	disablePluginAndSave?: (id: string) => Promise<void>;
+}
 
 const pad = (n: number) => String(n).padStart(2, "0");
 function now(withDate = true): string {
@@ -61,7 +70,11 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 		}
 
 		this.app.workspace.onLayoutReady(() => {
-			if (this.settings.pullOnStartup && this.settings.remoteUrl) {
+			const otherGit = this.obsidianGitEnabled();
+			if (this.settings.remoteUrl && otherGit) {
+				new Notice("Light Git: obsidian-git이 켜져 있어 자동 pull/동기화를 건너뜁니다. 한 플러그인만 쓰세요 (설정 > 원격 저장소 연결에서 끌 수 있습니다).", 10000);
+			}
+			if (this.settings.pullOnStartup && this.settings.remoteUrl && !otherGit) {
 				this.run(
 					"pull",
 					async (b) => {
@@ -160,7 +173,9 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 		this.autoSyncTimer = null;
 		const min = this.settings.autoSyncMinutes;
 		if (min > 0) {
-			this.autoSyncTimer = window.setInterval(() => this.sync(undefined, true), min * 60 * 1000);
+			this.autoSyncTimer = window.setInterval(() => {
+				if (!this.obsidianGitEnabled()) this.sync(undefined, true);
+			}, min * 60 * 1000);
 			this.registerInterval(this.autoSyncTimer);
 		}
 	}
@@ -212,8 +227,38 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 		return ok;
 	}
 
+	private pluginManager(): PluginManager | null {
+		return ((this.app as unknown as { plugins?: PluginManager }).plugins ?? null) as PluginManager | null;
+	}
+
+	obsidianGitEnabled(): boolean {
+		return !!this.pluginManager()?.enabledPlugins?.has(OBSIDIAN_GIT);
+	}
+
+	/** obsidian-git이 켜져 있으면 끌지 먼저 묻는다 (.git 폴더와 설정은 건드리지 않음) */
 	connect() {
-		return this.run("연결", (b) => b.connect());
+		const doConnect = () => this.run("연결", (b) => b.connect());
+		if (!this.obsidianGitEnabled()) return doConnect();
+		new ConfirmModal(
+			this.app,
+			"obsidian-git 플러그인이 켜져 있습니다. 두 플러그인이 같은 볼트를 동시에 동기화하면 파일이 꼬이거나 저장소가 깨질 수 있습니다.\n" +
+				"obsidian-git을 끄고 연결할까요? obsidian-git의 .git 폴더와 설정은 그대로 두며, Light Git은 .lightgit 폴더에 따로 저장소를 만듭니다.",
+			"끄고 연결",
+			async () => {
+				try {
+					const pm = this.pluginManager();
+					if (!pm?.disablePluginAndSave) throw new Error("이 Obsidian 버전에서는 자동으로 끌 수 없습니다.");
+					await pm.disablePluginAndSave(OBSIDIAN_GIT);
+				} catch (e) {
+					console.error("[light-git] obsidian-git 끄기 실패", e);
+					new Notice(`obsidian-git을 끄지 못했습니다: ${errorText(e)}\n설정 > 커뮤니티 플러그인에서 직접 끈 뒤 다시 연결하세요.`, 10000);
+					return;
+				}
+				new Notice("obsidian-git을 껐습니다. 연결을 시작합니다.");
+				await doConnect();
+			},
+		).open();
+		return Promise.resolve(false);
 	}
 
 	pullCommand() {

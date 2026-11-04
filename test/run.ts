@@ -3,7 +3,8 @@ import * as os from "os";
 import * as path from "path";
 import { execFileSync } from "child_process";
 import nodeHttp from "isomorphic-git/http/node";
-import { MockAdapter } from "./mockAdapter";
+import * as git from "isomorphic-git";
+import { CountingAdapter, MockAdapter } from "./mockAdapter";
 import { startGitServer } from "./gitServer";
 import { ObsidianFs } from "../src/git/obsidianFs";
 import { IsoBackend } from "../src/git/isoBackend";
@@ -107,10 +108,13 @@ async function main() {
 	await X.b.connect();
 	const cFetch = server.requests.slice(beforeC).filter((r) => r.path.endsWith("git-upload-pack")).reduce((s, r) => s + r.resBytes, 0);
 	check("existing vault: same files are not downloaded again", cFetch < 1024 * 1024, `fetched=${(cFetch / 1024).toFixed(0)}KB`);
-	check("existing vault: local edit kept", fs.readFileSync(path.join(X.root, "notes/hello.md"), "utf8") === "local edit\n");
+	// .git 기록이 없어 어느 쪽이 최신인지 모름 → 원격 최신본을 쓰고, 볼트 내용은 충돌 사본으로 보관 (옛 파일로 원격을 덮어쓰지 않게)
+	const xCopy = fs.readdirSync(path.join(X.root, "notes")).find((f) => f.startsWith("hello (충돌 사본"));
+	check("existing vault: differing file → remote content + conflict copy", read(X.root, "notes/hello.md") === read(A.root, "notes/hello.md") && !!xCopy && read(X.root, `notes/${xCopy}`) === "local edit\n", String(xCopy));
 	check("existing vault: missing file written", fs.existsSync(path.join(X.root, "notes/small.md")));
 	const cChanges = (await X.b.changes()).map((c) => `${c.type}:${c.path}`);
-	check("existing vault: only the local edit shows", JSON.stringify(cChanges) === '["modified:notes/hello.md"]', JSON.stringify(cChanges));
+	check("existing vault: only the conflict copy shows", JSON.stringify(cChanges) === JSON.stringify([`added:notes/${xCopy}`]), JSON.stringify(cChanges));
+	fs.unlinkSync(path.join(X.root, `notes/${xCopy}`));
 	await A.b.pull();
 
 	// 3. 서로 다른 파일 수정 → 자동 병합
@@ -351,6 +355,88 @@ async function main() {
 	const eFile = fs.existsSync(path.join(vaultE, "repo/notes/from-d.md")) ? read(vaultE, "repo/notes/from-d.md").replace(/\r\n/g, "\n") : null; // Windows autocrlf
 	const eChanges = await E.changes();
 	check("subfolder: native clones into folder", eFile === "D\n" && (await E.isRepo()) && eChanges.length === 0, JSON.stringify({ eFile, repo: await E.isRepo(), eChanges: eChanges.slice(0, 3) }));
+
+	// 14. iOS에서 obsidian-git을 쓰던 볼트 (isomorphic-git 전체 clone → 히스토리 전체가 pack 하나)
+	await A.b.pull();
+	await sync(A.b, "before obsidian-git phone");
+	const url = `${server.url}/vault.git`;
+	const ogClone = async (name: string) => {
+		const root = path.join(tmp, name);
+		fs.mkdirSync(root);
+		await git.clone({ fs, http: nodeHttp, dir: root, url, ref: "main", singleBranch: true });
+		const ad = new CountingAdapter(root);
+		return { root, ad, b: new IsoBackend(new ObsidianFs(ad as any), nodeHttp, cfg("og")) };
+	};
+	const og = await ogClone("OG");
+	// 폰: push 못 한 obsidian-git 커밋, 커밋 안 한 편집, PC와 같은 파일 편집, 이 플러그인을 켠 플러그인 목록
+	write(og.root, "notes/c.md", "phone committed\n");
+	await git.add({ fs, dir: og.root, filepath: "notes/c.md" });
+	const ogHead = await git.commit({ fs, dir: og.root, message: "vault backup: phone", author: { name: "og", email: "og@t" } });
+	write(og.root, "notes/s1.md", "phone uncommitted\n");
+	write(og.root, "notes/hello.md", "phone edit\n");
+	write(og.root, ".obsidian/community-plugins.json", '["light-git"]');
+	// 그 사이 PC가 push
+	write(A.root, "notes/hello.md", "pc edit\n");
+	write(A.root, "notes/unrelated.md", "pc newer\n");
+	write(A.root, "notes/pc-new.md", "pc new\n");
+	fs.unlinkSync(path.join(A.root, "notes/b-only.md"));
+	write(A.root, ".obsidian/community-plugins.json", '["obsidian-git"]');
+	await sync(A.b, "pc after phone");
+	og.ad.reset();
+	const before14 = server.requests.length;
+	const msg14 = await og.b.connect();
+	const fetched14 = server.requests.slice(before14).filter((r) => r.path.endsWith("git-upload-pack")).reduce((s, r) => s + r.resBytes, 0);
+	check("obsidian-git vault: own repo in .lightgit, old .git ignores it", fs.existsSync(path.join(og.root, ".lightgit/config")) && read(og.root, ".git/info/exclude").includes(".lightgit/"), msg14.split("\n")[0]);
+	check("obsidian-git vault: old .git HEAD unchanged", sh(og.root, "rev-parse", "HEAD").trim() === ogHead);
+	check("obsidian-git vault: big pack not re-read", og.ad.packReads <= 6, `pack reads=${og.ad.packReads} (${(og.ad.packReadBytes / 1048576).toFixed(1)}MB)`);
+	check("obsidian-git vault: index written in batches", og.ad.indexWrites <= 20, `index writes=${og.ad.indexWrites}`);
+	check("obsidian-git vault: existing files not downloaded", fetched14 < 1024 * 1024, `fetched=${(fetched14 / 1024).toFixed(0)}KB`);
+	check("obsidian-git vault: stale file updated to PC version", read(og.root, "notes/unrelated.md") === "pc newer\n");
+	check("obsidian-git vault: PC add/delete applied", read(og.root, "notes/pc-new.md") === "pc new\n" && !fs.existsSync(path.join(og.root, "notes/b-only.md")));
+	check("obsidian-git vault: phone-only edits kept", read(og.root, "notes/c.md") === "phone committed\n" && read(og.root, "notes/s1.md") === "phone uncommitted\n");
+	const ogCopy = fs.readdirSync(path.join(og.root, "notes")).find((f) => f.startsWith("hello (충돌 사본"));
+	check("obsidian-git vault: both-edited file → PC version + conflict copy", read(og.root, "notes/hello.md") === "pc edit\n" && !!ogCopy && read(og.root, `notes/${ogCopy}`) === "phone edit\n", String(ogCopy));
+	check("obsidian-git vault: plugin list stays local", read(og.root, ".obsidian/community-plugins.json") === '["light-git"]');
+	const ogChanges = (await og.b.changes()).map((c) => `${c.type}:${c.path}`).sort();
+	check(
+		"obsidian-git vault: changes = phone edits only",
+		JSON.stringify(ogChanges) === JSON.stringify([".obsidian/community-plugins.json", `notes/${ogCopy}`, "notes/c.md", "notes/s1.md"].map((p) => (p.includes("충돌") ? `added:${p}` : `modified:${p}`)).sort()),
+		JSON.stringify(ogChanges),
+	);
+	await sync(og.b, "phone first sync");
+	await A.b.pull();
+	check("obsidian-git vault: phone sync doesn't revert PC changes", read(A.root, "notes/hello.md") === "pc edit\n" && read(A.root, "notes/unrelated.md") === "pc newer\n" && read(A.root, "notes/c.md") === "phone committed\n");
+
+	// 14-1. 연결 도중 앱이 꺼짐 → 이어서 연결
+	const R = await ogClone("R");
+	write(A.root, "notes/after-r.md", "after R\n");
+	await sync(A.b, "after R clone");
+	R.ad.failOn = (p) => p.endsWith("notes/after-r.md");
+	let crashed = false;
+	try {
+		await R.b.connect();
+	} catch {
+		crashed = true;
+	}
+	check("resume: interrupted connect leaves a marker", crashed && fs.existsSync(path.join(R.root, ".lightgit/LIGHT_GIT_CLONING")));
+	const rejects = async (fn: () => Promise<unknown>) => fn().then(() => false, (e) => String(e).includes("다시 실행"));
+	check("resume: pull/commit refused until reconnect", (await rejects(() => R.b.pull())) && (await rejects(() => R.b.commit("x"))));
+	R.ad.failOn = null;
+	await R.b.connect();
+	check("resume: reconnect finishes", read(R.root, "notes/after-r.md") === "after R\n" && !fs.existsSync(path.join(R.root, ".lightgit/LIGHT_GIT_CLONING")) && (await R.b.changes()).length === 0, JSON.stringify(await R.b.changes()));
+
+	// 14-2. 히스토리 전체가 pack인 저장소에서 pull/push: 작업마다 pack을 한 번만 읽어야 한다 (캐시 없을 땐 수십 번)
+	const K = await ogClone("K");
+	await git.setConfig({ fs, dir: K.root, path: "lightgit.owned", value: "true" });
+	write(A.root, "notes/for-k.md", "for K\n");
+	await sync(A.b, "for K");
+	K.ad.reset();
+	await K.b.pull();
+	check("packed repo: pull reads pack only a few times", read(K.root, "notes/for-k.md") === "for K\n" && K.ad.packReads <= 4, `pack reads=${K.ad.packReads}`);
+	write(K.root, "notes/from-k.md", "K\n");
+	K.ad.reset();
+	await sync(K.b, "K edit");
+	check("packed repo: sync reads pack only a few times", sh(bare, "show", "main:notes/from-k.md") === "K\n" && K.ad.packReads <= 8, `pack reads=${K.ad.packReads}`);
 
 	server.close();
 	fs.rmSync(tmp, { recursive: true, force: true });

@@ -12,7 +12,7 @@ export class ConfirmModal extends Modal {
 	}
 
 	onOpen() {
-		this.contentEl.createEl("p", { text: this.message });
+		this.contentEl.createEl("p", { text: this.message, cls: "light-git-confirm-text" });
 		new Setting(this.contentEl)
 			.addButton((b) => b.setButtonText("취소").onClick(() => this.close()))
 			.addButton((b) =>

@@ -28,8 +28,16 @@ export interface PartialFetchOptions {
 	onAuth: () => { username: string; password: string } | undefined;
 	branch: string;
 	onProgress?: (msg: string) => void;
-	/** 받기 전에 볼트에 이미 있는 같은 내용 파일로 blob을 채운다 (채웠으면 true) — 기존 볼트를 연결할 때 다시 받지 않도록 */
-	reuse?: (path: string, oid: string) => Promise<boolean>;
+	/**
+	 * 받기 전에 볼트에 이미 있는 같은 내용 파일로 blob을 채운다 — 기존 볼트를 연결할 때 다시 받지 않도록.
+	 * 한꺼번에 넘기고(호출자가 묶어서 index를 몇 번만 쓰게), 채운 oid 집합을 돌려받는다.
+	 */
+	reuse?: (items: { path: string; oid: string }[]) => Promise<Set<string>>;
+	/**
+	 * isomorphic-git 객체 캐시. 호출자의 작업 하나 동안 공유해야 한다:
+	 * 캐시 없이 부르면 호출마다 pack 파일 전체를 다시 읽는다 (obsidian-git이 만든 20MB pack을 70번 → iOS 먹통).
+	 */
+	cache?: object;
 }
 
 /** 이보다 작은 파일은 첫 요청에 한꺼번에 받는다 (노트 대부분) */
@@ -51,12 +59,12 @@ export async function partialFetch(o: PartialFetchOptions): Promise<string | nul
 	const tip = refs.find((r) => r.ref === `refs/heads/${o.branch}`)?.oid;
 	if (!tip) return null;
 	const base = { fs: o.fs as unknown as git.FsClient, dir: o.dir };
-	const cache = {};
+	const cache = o.cache ?? {};
 
 	// 1) 커밋 + 트리 + 작은 파일
 	if (!(await hasObject(base, tip, cache))) {
 		o.onProgress?.("Git: 변경 목록 받는 중…");
-		const haves = await localHaves(base, o.branch);
+		const haves = await localHaves(base, o.branch, cache);
 		const shallow = await readShallow(o.fs);
 		const args = [`filter blob:limit=${SMALL_BLOB}`, ...shallow.map((s) => `shallow ${s}`), ...(haves.length ? [] : ["deepen 1"])];
 		const res = parseFetch(await post(o, fetchRequest([tip], haves, args)));
@@ -72,24 +80,24 @@ export async function partialFetch(o: PartialFetchOptions): Promise<string | nul
 	// 2) 큰 파일: tip 트리에서 아직 없는 blob만 하나씩
 	const blobs = new Map<string, string>();
 	await listBlobs(base, (await git.readCommit({ ...base, oid: tip, cache })).commit.tree, cache, blobs, "");
-	const missing: string[] = [];
-	let checked = 0;
+	let missing: { path: string; oid: string }[] = [];
 	for (const [oid, path] of blobs) {
 		if (await exists(o.fs, `.git/objects/${oid.slice(0, 2)}/${oid.slice(2)}`)) continue;
 		if (await hasObject(base, oid, cache)) continue;
-		if (o.reuse) {
-			if (checked++ % 20 === 0) o.onProgress?.(`Git: 볼트에 있는 파일 확인 중… (${checked}개)`);
-			if (await o.reuse(path, oid)) continue;
-		}
-		missing.push(oid);
+		missing.push({ path, oid });
+	}
+	if (o.reuse && missing.length) {
+		const reused = await o.reuse(missing);
+		missing = missing.filter((m) => !reused.has(m.oid));
 	}
 	let bytes = 0;
 	for (let i = 0; i < missing.length; i++) {
 		o.onProgress?.(`Git: 큰 파일 받는 중 ${i}/${missing.length}개 (${(bytes / 1048576).toFixed(0)}MB)`);
-		const { pack } = parseFetch(await post(o, fetchRequest([missing[i]], [], [])));
+		const { pack } = parseFetch(await post(o, fetchRequest([missing[i].oid], [], [])));
 		bytes += pack.byteLength;
 		const packPath = await storePack(o, pack);
-		const { blob } = await git.readBlob({ ...base, oid: missing[i], cache: {} });
+		// 큰 파일 pack은 바로 지우므로 공유 캐시에 올리지 않는다 (올리면 받은 파일이 전부 메모리에 남는다)
+		const { blob } = await git.readBlob({ ...base, oid: missing[i].oid, cache: {} });
 		await git.writeBlob({ ...base, blob });
 		await o.fs.unlink(packPath);
 		await o.fs.unlink(packPath.replace(/\.pack$/, ".idx"));
@@ -99,13 +107,34 @@ export async function partialFetch(o: PartialFetchOptions): Promise<string | nul
 	return tip;
 }
 
+/**
+ * 커밋 하나의 커밋·트리 객체만 받는다 (파일 내용은 받지 않음). 기존 볼트를 연결할 때 '마지막으로 본 원격 상태'를 알기 위해 쓴다.
+ * 서버가 지원하지 않거나 그 커밋이 원격에 없으면(force push 등) false.
+ */
+export async function fetchTreesOnly(o: PartialFetchOptions, oid: string): Promise<boolean> {
+	try {
+		if (!(await supportsPartialFetch(o))) return false;
+		const base = { fs: o.fs as unknown as git.FsClient, dir: o.dir };
+		if (await hasObject(base, oid, o.cache ?? {})) return true;
+		const shallow = await readShallow(o.fs);
+		const res = parseFetch(await post(o, fetchRequest([oid], [], ["filter blob:none", ...shallow.map((s) => `shallow ${s}`), "deepen 1"])));
+		await ensureDir(o.fs, ".git/objects/pack");
+		await storePack(o, res.pack);
+		if (res.shallow.length) await o.fs.writeFile(".git/shallow", [...new Set([...shallow, ...res.shallow])].join("\n") + "\n");
+		return true;
+	} catch (e) {
+		console.warn("[light-git] 기준 커밋을 받지 못했습니다", oid, e);
+		return false;
+	}
+}
+
 /** 원격도 가진 것으로 보이는 로컬 커밋들: origin/브랜치와 로컬 브랜치의 first-parent 조상 (실제로 있는 것만) */
-async function localHaves(base: { fs: git.FsClient; dir: string }, branch: string): Promise<string[]> {
+async function localHaves(base: { fs: git.FsClient; dir: string }, branch: string, cache: object): Promise<string[]> {
 	const out = new Set<string>();
 	for (const ref of [`refs/remotes/origin/${branch}`, `refs/heads/${branch}`]) {
 		let oid: string | undefined = await git.resolveRef({ ...base, ref }).catch(() => undefined);
 		for (let i = 0; oid && i < HAVE_DEPTH; i++) {
-			const c = await git.readCommit({ ...base, oid }).catch(() => null);
+			const c = await git.readCommit({ ...base, oid, cache }).catch(() => null);
 			if (!c) break; // shallow 경계 밖: 없는 커밋을 have로 보내면 원격이 필요한 객체를 빼먹는다
 			out.add(oid);
 			oid = c.commit.parent[0];
