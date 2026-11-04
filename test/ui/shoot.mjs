@@ -41,7 +41,21 @@ check("modal closed after save", await page.evaluate(() => window.__closed === t
 await page.evaluate(() => { window.__closed = false; window.openMerge(); });
 await page.evaluate(() => document.querySelector(".light-git-merge-footer .mod-cta").click());
 check("save blocked while unresolved", await page.evaluate(() => window.__closed === false && window.__notices.at(-1).startsWith("아직")));
-await page.evaluate(() => document.querySelector(".modal").remove());
+
+// 처리한 내용이 있으면 닫기 전에 확인 (Esc·바깥 탭도 close()를 부른다)
+const mergeOpen = () => page.evaluate(() => !!document.querySelector(".light-git-merge-modal"));
+const clickText = (text) => page.evaluate((t) => [...document.querySelectorAll(".modal button")].find((b) => b.textContent === t)?.click(), text);
+await page.evaluate(() => [...document.querySelectorAll(".light-git-merge-toolbar button")].find((b) => b.textContent.includes("충돌 없는")).click());
+await page.evaluate(() => document.querySelector(".light-git-merge-footer button").click());
+check("close with work: asks first", (await mergeOpen()) && (await page.evaluate(() => !!document.querySelector(".light-git-confirm-text"))));
+await page.evaluate(() => document.querySelector(".light-git-confirm-text").parentElement.querySelector("button").click());
+check("close with work: cancel keeps the work", (await mergeOpen()) && !(await page.evaluate(() => document.querySelector(".light-git-confirm-text"))) && (await summary()) === "충돌 2남음", await summary());
+await page.evaluate(() => document.querySelector(".light-git-merge-footer button").click());
+await clickText("버리고 닫기");
+check("close with work: confirm closes", !(await mergeOpen()));
+await page.evaluate(() => window.openMerge());
+await page.evaluate(() => document.querySelector(".light-git-merge-footer button").click());
+check("close without work: closes at once", !(await mergeOpen()) && !(await page.evaluate(() => document.querySelector(".light-git-confirm-text"))));
 
 // 모바일 (iPhone 폭)
 await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true });

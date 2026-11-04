@@ -1,4 +1,4 @@
-import { messageText, type ChangeType, type CommitInfo, type CommitMessage, type ConflictVersions, type FileChange, type GitBackend, type GitConfig, type WorkChange } from "./types";
+import { isNewConflictCopy, messageText, type ChangeType, type CommitInfo, type CommitMessage, type ConflictVersions, type FileChange, type GitBackend, type GitConfig, type WorkChange } from "./types";
 
 interface RunResult {
 	code: number;
@@ -174,6 +174,7 @@ export class NativeBackend implements GitBackend {
 		if (unresolved.length) throw new Error(`해결되지 않은 충돌 ${unresolved.length}건이 있습니다.`);
 		const merging = await this.isMerging();
 		if (!stagedOnly || merging) await this.git("add", "-A");
+		await this.unstage((await this.changes()).filter((c) => c.staged && isNewConflictCopy(c)).map((c) => c.path));
 		const staged = await this.run(["diff", "--cached", "--quiet"]);
 		if (staged.code === 0 && !merging) return 0;
 		const text = typeof message === "string" ? message : messageText(message, (await this.changes()).filter((c) => c.staged).length);
@@ -204,5 +205,13 @@ export class NativeBackend implements GitBackend {
 		const { branch, remoteUrl } = this.cfg();
 		if (!remoteUrl || !(await this.hasHead())) return;
 		await this.git("push", "-u", "origin", branch);
+	}
+
+	async unpushedCount(): Promise<number> {
+		const { branch, remoteUrl } = this.cfg();
+		if (!remoteUrl || !(await this.hasHead())) return 0;
+		const tracked = await this.run(["rev-list", "--count", "--first-parent", `refs/remotes/origin/${branch}..HEAD`]);
+		// 원격 추적 ref가 없으면 아직 한 번도 올리지 않은 것
+		return Number(tracked.code === 0 ? tracked.stdout : await this.git("rev-list", "--count", "--first-parent", "HEAD"));
 	}
 }

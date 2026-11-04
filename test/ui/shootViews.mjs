@@ -16,7 +16,7 @@ async function open(hash, viewport) {
   await new Promise((r) => setTimeout(r, 100));
 }
 
-await open("", { width: 1000, height: 560 });
+await open("", { width: 1260, height: 560 });
 const info = await page.evaluate(() => {
   const groups = (id) => [...document.querySelectorAll(`#${id} .light-git-group`)].map((g) => {
     const head = g.querySelector(".light-git-group-head input");
@@ -76,6 +76,65 @@ check(
 // 그룹 접기
 await page.evaluate(() => document.querySelector("#staging .light-git-group-head").click());
 check("group collapses", await page.evaluate(() => getComputedStyle(document.querySelector("#staging .light-git-group-body")).display === "none"));
+
+// 충돌 사본: 별도 그룹, 체크박스 없음, 커밋 대상 수에서 제외, 비교·삭제
+await page.evaluate(() => { window.__calls.length = 0; });
+const copies = await page.evaluate(() => {
+  const titles = [...document.querySelectorAll("#copies .light-git-group")].map((g) => g.querySelector(".light-git-group-title").textContent + " " + g.querySelector(".light-git-group-count").textContent);
+  const group = [...document.querySelectorAll("#copies .light-git-group")][1];
+  return {
+    titles,
+    hint: document.querySelector("#copies .light-git-commit-hint").textContent,
+    checks: group.querySelectorAll("input").length,
+    undo: group.querySelectorAll('[aria-label="변경 버리기"]').length,
+    placeholder: document.querySelector("#copies .light-git-message").placeholder,
+  };
+});
+check("copies: own group, excluded from commit count", JSON.stringify(copies.titles) === JSON.stringify(["변경 1", "충돌 사본 1"]) && copies.hint === "전체 1개" && copies.checks === 0 && copies.undo === 0 && copies.placeholder.includes("(desktop) 1개"), JSON.stringify(copies));
+await page.evaluate(() => {
+  const row = [...document.querySelectorAll("#copies .light-git-group")][1].querySelector(".light-git-file");
+  row.click();
+  row.querySelector('[aria-label="사본 삭제"]').click();
+});
+const confirmBtn = await page.evaluate(() => {
+  const b = [...document.querySelectorAll(".modal button")].find((x) => x.textContent === "삭제");
+  b?.click();
+  return !!b;
+});
+const copyCalls = await page.evaluate(() => window.__calls);
+const copyP = "notes/회의록 (충돌 사본 2026-11-04 1530).md";
+check("copies: click compares, delete asks then discards", confirmBtn && JSON.stringify(copyCalls) === JSON.stringify([["openCopyDiff", copyP], ["discard", copyP]]), JSON.stringify(copyCalls));
+
+// 상태 줄: push 대기 / 진행 중 / 마지막 결과
+const status = () => page.evaluate(() => {
+  const el = document.querySelector("#copies .light-git-status");
+  const pull = document.querySelector('#copies [aria-label="Pull"]');
+  const hist = document.querySelector('#copies [aria-label="History"]');
+  return {
+    text: el.textContent,
+    spinner: !!el.querySelector(".light-git-spinner"),
+    failed: !!el.querySelector(".is-failed"),
+    empty: el.classList.contains("is-empty"),
+    btnDisabled: document.querySelector("#copies .light-git-commit-btn").disabled,
+    pullOff: getComputedStyle(pull).pointerEvents === "none",
+    historyOff: getComputedStyle(hist).pointerEvents === "none",
+  };
+});
+const s0 = await status();
+check("status: shows unpushed commits", s0.text === "↑ 2개 push 대기" && !s0.spinner && !s0.btnDisabled && !s0.pullOff, JSON.stringify(s0));
+check("status: hidden when nothing to say", await page.evaluate(() => getComputedStyle(document.querySelector("#staging .light-git-status")).display === "none"));
+await page.evaluate(() => { window.__running = "동기화"; window.__views.copies.renderStatus(); });
+const s1 = await status();
+check("status: running shows spinner and disables git actions", s1.text === "동기화 중…" && s1.spinner && s1.btnDisabled && s1.pullOff && !s1.historyOff, JSON.stringify(s1));
+await page.screenshot({ path: `${out}/views-status-running.png`, clip: { x: 948, y: 0, width: 300, height: 520 } });
+await page.evaluate(() => {
+  window.__running = null;
+  window.__views.copies.plugin.lastRun = { text: "10:12 push 실패", failed: true };
+  window.__views.copies.renderStatus();
+});
+const s2 = await status();
+check("status: failure stays visible with unpushed count", s2.text === "↑ 2개 push 대기10:12 push 실패" && s2.failed && !s2.btnDisabled && !s2.pullOff, JSON.stringify(s2));
+await page.screenshot({ path: `${out}/views-status-failed.png`, clip: { x: 948, y: 0, width: 300, height: 520 } });
 
 // 다크 테마
 await open("#dark", { width: 1000, height: 560 });

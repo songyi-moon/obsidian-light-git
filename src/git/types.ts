@@ -11,6 +11,22 @@ export interface WorkChange extends FileChange {
 	unstaged: boolean;
 }
 
+/** notes/a (충돌 사본 2026-11-04 1530) 2.md 의 " (충돌 사본 …) 2" 부분 */
+const CONFLICT_COPY = / \(충돌 사본 \d{4}-\d{2}-\d{2} \d{4}\)(?: \d+)?(?=\.[^./]*$|$)/;
+
+/**
+ * 아직 git에 없는 충돌 사본. 기기에만 두는 보관용이라 커밋하지 않는다.
+ * 이미 커밋된 사본은 일반 파일처럼 다룬다 (그래야 삭제·수정을 올릴 수 있다).
+ */
+export function isNewConflictCopy(c: FileChange): boolean {
+	return c.type === "added" && CONFLICT_COPY.test(c.path);
+}
+
+/** 충돌 사본 경로 → 원본 경로 */
+export function conflictCopyOriginal(path: string): string {
+	return path.replace(CONFLICT_COPY, "");
+}
+
 /** 커밋 메시지, 또는 커밋할 파일 수를 받아 메시지를 만드는 함수 (상태 확인을 한 번만 하려고) */
 export type CommitMessage = string | ((numFiles: number) => string);
 
@@ -67,6 +83,8 @@ export interface GitBackend {
 	/** 충돌난 파일 경로 목록을 반환 (빈 배열 = 성공). */
 	pull(): Promise<string[]>;
 	push(): Promise<void>;
+	/** 마지막으로 본 원격 상태 기준, 아직 올리지 않은 커밋 수. 네트워크를 쓰지 않는다. */
+	unpushedCount(): Promise<number>;
 	/** 머지 진행 중인지 (충돌을 다 해결했어도 머지 커밋 전까지는 true) */
 	isMerging(): Promise<boolean>;
 	/** 진행 중인 머지에서 아직 해결 안 된 파일 */

@@ -1,5 +1,5 @@
 import { ItemView, Notice, setIcon, type WorkspaceLeaf } from "obsidian";
-import type { WorkChange } from "../git/types";
+import { isNewConflictCopy, type WorkChange } from "../git/types";
 import type LightGitPlugin from "../main";
 import { ConfirmModal } from "./confirmModal";
 import { addPinButton } from "./pinButton";
@@ -22,7 +22,8 @@ export class SourceControlView extends ItemView {
 	/** 읽는 도중 들어온 새로고침 요청 → 끝나고 한 번 더 */
 	private again = false;
 	/** 마지막으로 읽은 상태. 체크박스는 다시 읽지 않고 이걸 바꿔서 바로 그린다 */
-	private state: { merging: boolean; conflicts: string[]; changes: WorkChange[] } | null = null;
+	private state: { merging: boolean; conflicts: string[]; changes: WorkChange[]; copies: string[]; unpushed: number } | null = null;
+	private statusEl!: HTMLElement;
 	/** 숨겨져 있어서 갱신을 미룬 상태 */
 	private stale = false;
 	/** 체크(스테이징)된 파일이 있으면 그것만 커밋 */
@@ -55,17 +56,18 @@ export class SourceControlView extends ItemView {
 
 		const bar = root.createDiv({ cls: "light-git-toolbar" });
 		bar.createDiv({ cls: "light-git-toolbar-title", text: "변경 사항" });
-		const tool = (icon: string, label: string, onClick: () => void) => {
-			const b = bar.createDiv({ cls: "clickable-icon light-git-icon", attr: { "aria-label": label } });
+		const tool = (icon: string, label: string, onClick: () => void, cls = "light-git-busy-off") => {
+			const b = bar.createDiv({ cls: `clickable-icon light-git-icon ${cls}`, attr: { "aria-label": label } });
 			setIcon(b, icon);
 			b.onclick = onClick;
 		};
 		tool("refresh-cw", "새로고침", () => this.refresh());
 		tool("arrow-down-to-line", "Pull", () => this.plugin.pullCommand());
 		tool("arrow-up-from-line", "Push", () => this.plugin.pushCommand());
-		tool("history", "History", () => this.plugin.activateHistory());
+		tool("history", "History", () => this.plugin.activateHistory(), "");
 		addPinButton(this, bar);
 
+		this.statusEl = root.createDiv({ cls: "light-git-status" });
 		this.listEl = root.createDiv({ cls: "light-git-list" });
 
 		const commitBox = root.createDiv({ cls: "light-git-commit-box" });
@@ -113,14 +115,18 @@ export class SourceControlView extends ItemView {
 		try {
 			const b = await this.plugin.getBackend();
 			if (!(await b.isRepo())) {
+				this.state = null;
+				this.renderStatus();
 				this.renderNotConnected();
 				return;
 			}
 			await this.plugin.stagingDone(); // 체크박스 처리 전 index를 읽으면 방금 누른 게 되돌아가 보인다
 			const conflicts = await b.conflicts();
-			const changes = (await b.changes()).filter((c) => !conflicts.includes(c.path));
+			const all = (await b.changes()).filter((c) => !conflicts.includes(c.path));
+			const changes = all.filter((c) => !isNewConflictCopy(c));
+			const copies = all.filter(isNewConflictCopy).map((c) => c.path);
 			const merging = await b.isMerging();
-			this.state = { merging, conflicts, changes };
+			this.state = { merging, conflicts, changes, copies, unpushed: await b.unpushedCount() };
 			this.show();
 		} catch (e) {
 			this.listEl.empty();
@@ -136,14 +142,34 @@ export class SourceControlView extends ItemView {
 
 	private show() {
 		if (!this.state) return;
-		const { merging, conflicts, changes } = this.state;
+		const { merging, conflicts, changes, copies } = this.state;
 		const staged = changes.filter((c) => c.staged);
 		this.stagedOnly = staged.length > 0 && !merging;
 		const count = this.stagedOnly ? staged.length : changes.length + conflicts.length;
 		this.messageEl.placeholder = `커밋 메시지 (비우면: ${this.plugin.defaultMessage(count)})`;
 		this.commitBtn.setText(this.stagedOnly ? `${staged.length}개 커밋 & 동기화` : "커밋 & 동기화");
 		this.hintEl.setText(merging ? "머지 커밋" : this.stagedOnly ? `${staged.length}/${changes.length} 선택` : changes.length ? `전체 ${changes.length}개` : "");
-		this.render(merging, conflicts, changes);
+		this.render(merging, conflicts, changes, copies);
+		this.renderStatus();
+	}
+
+	/** 상단 상태 줄: 진행 중인 작업, 또는 올리지 않은 커밋과 마지막 작업 결과 */
+	renderStatus() {
+		if (!this.statusEl) return;
+		const running = this.plugin.runningLabel();
+		const last = this.plugin.lastRun;
+		const unpushed = this.state?.unpushed ?? 0;
+		this.contentEl.toggleClass("is-busy", !!running);
+		this.commitBtn.disabled = !!running;
+		this.statusEl.empty();
+		this.statusEl.toggleClass("is-empty", !running && !last && !unpushed);
+		if (running) {
+			this.statusEl.createSpan({ cls: "light-git-spinner" });
+			this.statusEl.createSpan({ text: `${running} 중…` });
+			return;
+		}
+		if (unpushed) this.statusEl.createSpan({ cls: "light-git-status-unpushed", text: `↑ ${unpushed}개 push 대기` });
+		if (last) this.statusEl.createSpan({ cls: `light-git-status-last${last.failed ? " is-failed" : ""}`, text: last.text });
 	}
 
 	/** 체크박스: 화면은 바로 바꾸고 스테이징은 뒤에서 순서대로 */
@@ -170,7 +196,7 @@ export class SourceControlView extends ItemView {
 		btn.onclick = () => this.plugin.connect();
 	}
 
-	private render(merging: boolean, conflicts: string[], changes: WorkChange[]) {
+	private render(merging: boolean, conflicts: string[], changes: WorkChange[], copies: string[]) {
 		this.listEl.empty();
 		if (conflicts.length) {
 			const g = this.group("conflicts", "충돌", conflicts.length, "is-conflict");
@@ -183,6 +209,15 @@ export class SourceControlView extends ItemView {
 		for (const c of changes) {
 			const check = merging ? null : c.staged && c.unstaged ? "some" : c.staged ? "all" : "none";
 			this.row(g, c.path, c.type, check, () => this.plugin.openChangeDiff(c.path));
+		}
+		if (copies.length) {
+			const body = this.group("copies", "충돌 사본", copies.length, "");
+			body.createDiv({ cls: "light-git-hint", text: "원격에 올라가지 않습니다. 원본과 비교해 필요한 내용을 옮긴 뒤 삭제하세요. 그대로 올리려면 파일 이름을 바꾸세요." });
+			for (const p of copies) {
+				this.row(body, p, "added", null, () => this.plugin.openCopyDiff(p), () => {
+					new ConfirmModal(this.app, `${p}\n충돌 사본을 삭제합니다. 되돌릴 수 없습니다.`, "삭제", () => this.plugin.discard(p)).open();
+				});
+			}
 		}
 	}
 
@@ -217,7 +252,7 @@ export class SourceControlView extends ItemView {
 		return cb;
 	}
 
-	private row(parent: HTMLElement, path: string, type: string, check: "all" | "some" | "none" | null, onClick: () => void) {
+	private row(parent: HTMLElement, path: string, type: string, check: "all" | "some" | "none" | null, onClick: () => void, onDeleteCopy?: () => void) {
 		const row = parent.createDiv({ cls: `light-git-file type-${type}`, attr: { "aria-label": path } });
 		if (check) this.checkbox(row, check, (on) => this.toggle([path], on));
 		const slash = path.lastIndexOf("/");
@@ -236,6 +271,7 @@ export class SourceControlView extends ItemView {
 			};
 		};
 		if (type !== "deleted") action("file-text", "파일 열기", () => this.plugin.openFile(path));
+		if (onDeleteCopy) action("trash-2", "사본 삭제", onDeleteCopy);
 		if (check) {
 			// 머지 중(체크박스 없음)에는 되돌리기도 막는다
 			action("undo-2", "변경 버리기", () => {
