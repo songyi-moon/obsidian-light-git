@@ -5,6 +5,9 @@ const ours = base.replace("참석자: 김, 이", "참석자: 김, 이, 박").rep
 const theirs = base.replace("3. 채용", "3. 채용\n4. 워크숍").replace("2. 일정", "2. 일정 — 11월 초").replace("다음 주 재논의", "다음 주 화요일 재논의");
 const saved: Record<string, string | null> = {};
 (window as any).__saved = saved;
-const host = { async saveResolution(path: string, content: string | null) { saved[path] = content; } };
+const host = {
+	async saveResolution(path: string, content: string | null) { saved[path] = content; },
+	afterResolution() { (window as any).__afterResolution = !!document.querySelector(".light-git-merge-modal") ? "before close" : "after close"; },
+};
 (window as any).openMerge = () => new MergeModal({} as any, host, "notes/회의록.md", { base, ours, theirs }).open();
 (window as any).openMerge();

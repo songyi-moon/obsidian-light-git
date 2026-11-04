@@ -85,6 +85,8 @@ export interface GitBackend {
 	push(): Promise<void>;
 	/** 마지막으로 본 원격 상태 기준, 아직 올리지 않은 커밋 수. 네트워크를 쓰지 않는다. */
 	unpushedCount(): Promise<number>;
+	/** 저장소를 건드리지 않고 원격에 접속해 본다. 설정한 브랜치가 원격에 있으면 true, 접속할 수 없으면 예외. */
+	checkRemote(): Promise<boolean>;
 	/** 머지 진행 중인지 (충돌을 다 해결했어도 머지 커밋 전까지는 true) */
 	isMerging(): Promise<boolean>;
 	/** 진행 중인 머지에서 아직 해결 안 된 파일 */

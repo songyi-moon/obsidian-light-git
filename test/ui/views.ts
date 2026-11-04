@@ -54,7 +54,12 @@ const withCopy = {
 	log,
 	commitFiles,
 };
+// 패널 5: 충돌을 다 해결한 머지 / 패널 6: 저장소 없음, URL도 없음
+const merged = { ...withCopy, isMerging: async () => true, changes: async () => [{ path: "notes/회의록.md", type: "modified", staged: true, unstaged: false }], unpushedCount: async () => 0 };
+const notConnected = { isRepo: async () => false };
 const plugin = (backend: unknown): any => ({
+	settings: { remoteUrl: "" },
+	openSettings: () => (window as any).__calls.push(["openSettings"]),
 	isBusy: () => false,
 	runningLabel: () => (window as any).__running ?? null,
 	lastRun: null,
@@ -76,6 +81,8 @@ const panes: [any, unknown, string][] = [
 	[SourceControlView, staging, "staging"],
 	[HistoryView, merging, "history"],
 	[SourceControlView, withCopy, "copies"],
+	[SourceControlView, merged, "merged"],
+	[SourceControlView, notConnected, "notConnected"],
 ];
 for (const [V, backend, id] of panes) {
 	const v = new V({ getViewState: () => ({}), togglePinned() {}, on: () => ({}) }, plugin(backend));

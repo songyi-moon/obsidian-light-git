@@ -207,6 +207,11 @@ export class NativeBackend implements GitBackend {
 		await this.git("push", "-u", "origin", branch);
 	}
 
+	async checkRemote(): Promise<boolean> {
+		const { branch, remoteUrl } = this.cfg();
+		return (await this.git("ls-remote", "--heads", remoteUrl, branch)).trim().length > 0;
+	}
+
 	async unpushedCount(): Promise<number> {
 		const { branch, remoteUrl } = this.cfg();
 		if (!remoteUrl || !(await this.hasHead())) return 0;

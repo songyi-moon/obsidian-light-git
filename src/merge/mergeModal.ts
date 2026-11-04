@@ -25,6 +25,8 @@ const FOLD_KEEP = 3;
 export interface MergeHost {
 	/** 결과 저장: content가 null이면 파일 삭제 */
 	saveResolution(path: string, content: string | null): Promise<void>;
+	/** 저장 후 화면이 닫힌 뒤 호출 */
+	afterResolution(): void;
 }
 
 /** IntelliJ처럼 변경 종류로 색을 구분: 수정(파랑) / 추가(초록) / 삭제(회색) / 충돌(빨강) */
@@ -111,6 +113,8 @@ export class MergeModal extends Modal {
 			b.createSpan({ text });
 			b.onclick = onClick;
 		};
+		btn("arrow-down", "다음 미해결", () => this.scrollToNextPending());
+		bar.createDiv({ cls: "light-git-toolbar-sep" });
 		btn("wand", "충돌 없는 변경 모두 적용", () => this.mutate(() => applyNonConflicting(this.regions)));
 		bar.createDiv({ cls: "light-git-toolbar-sep" });
 		btn("chevrons-right", "모두 내 것", () => this.mutate(() => acceptAll(this.regions, "ours")));
@@ -126,6 +130,15 @@ export class MergeModal extends Modal {
 		cancel.onclick = () => this.close();
 		this.saveBtn = foot.createEl("button", { text: "저장하고 해결", cls: "mod-cta" });
 		this.saveBtn.onclick = () => this.trySave();
+	}
+
+	/** 지금 보이는 위치 아래의 미해결 영역으로. 더 없으면 처음 것으로 돌아간다 */
+	private scrollToNextPending() {
+		const rows = Array.from(this.gridEl.querySelectorAll<HTMLElement>(".light-git-merge-row.is-pending"));
+		if (!rows.length) return void new Notice("처리할 영역이 남아 있지 않습니다.");
+		const top = this.gridEl.getBoundingClientRect().top;
+		const next = rows.find((r) => r.getBoundingClientRect().top > top + 4) ?? rows[0];
+		this.gridEl.scrollTop += next.getBoundingClientRect().top - top;
 	}
 
 	private mutate(fn: () => void) {
@@ -212,9 +225,11 @@ export class MergeModal extends Modal {
 			if (changed && !r.handled.includes(side)) {
 				const applyBtn = gutter.createEl("button", { cls: "light-git-gutter-btn is-apply", attr: { "aria-label": "결과에 적용" } });
 				setIcon(applyBtn, side === "ours" ? "chevrons-right" : "chevrons-left");
+				applyBtn.createSpan({ cls: "light-git-gutter-label", text: "적용" });
 				applyBtn.onclick = () => this.mutate(() => apply(r, side));
 				const ignoreBtn = gutter.createEl("button", { cls: "light-git-gutter-btn is-ignore", attr: { "aria-label": "무시" } });
 				setIcon(ignoreBtn, "x");
+				ignoreBtn.createSpan({ cls: "light-git-gutter-label", text: "무시" });
 				ignoreBtn.onclick = () => this.mutate(() => ignore(r, side));
 			} else if (changed) {
 				const done = r.applied.includes(side);
@@ -260,9 +275,11 @@ export class MergeModal extends Modal {
 	private async save(content: string | null) {
 		try {
 			await this.host.saveResolution(this.path, content);
-			super.close();
 		} catch (e) {
 			new Notice(`저장 실패: ${e instanceof Error ? e.message : String(e)}`);
+			return;
 		}
+		super.close();
+		this.host.afterResolution();
 	}
 }

@@ -1,6 +1,7 @@
 import "./polyfill";
 import { debounce, FileSystemAdapter, Notice, Platform, Plugin, TFile } from "obsidian";
 import { CommitMessageModal } from "./commitModal";
+import { friendlyError, remoteUrlProblem } from "./git/errors";
 import { IsoBackend } from "./git/isoBackend";
 import { NativeBackend } from "./git/nativeBackend";
 import { ObsidianFs } from "./git/obsidianFs";
@@ -21,6 +22,11 @@ const OBSIDIAN_GIT = "obsidian-git";
 interface PluginManager {
 	enabledPlugins?: Set<string>;
 	disablePluginAndSave?: (id: string) => Promise<void>;
+}
+
+interface SettingManager {
+	open?: () => void;
+	openTabById?: (id: string) => void;
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -44,6 +50,8 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 	private conflictNotice: Notice | null = null;
 	private staging: Promise<void> = Promise.resolve();
 	private progressNotice: Notice | null = null;
+	/** 모바일에서 직접 실행한 작업이 끝날 때까지 띄워 두는 문구. 세부 진행 알림이 끝나면 이 문구로 돌아온다 */
+	private progressBase: string | null = null;
 	private statusEl: HTMLElement | null = null;
 	private autoSyncTimer: number | null = null;
 
@@ -217,6 +225,11 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 		this.running = label;
 		this.setStatus(`Git: ${label}…`);
 		this.renderViewStatus();
+		// 노트 화면에서 실행하면 뷰의 상태 줄이 안 보이므로 모바일은 알림으로도 알린다 (자동 실행은 조용히)
+		if (!quiet && Platform.isMobile) {
+			this.progressBase = `Git: ${label} 중…`;
+			this.showProgress(null);
+		}
 		let ok = false;
 		try {
 			const result = await fn(await this.getBackend());
@@ -229,16 +242,58 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 			ok = true;
 		} catch (e) {
 			console.error("[light-git]", e);
-			new Notice(`Git ${label} 실패: ${errorText(e)}`, 10000);
+			this.errorNotice(`Git ${label} 실패`, errorText(e));
 			this.lastRun = { text: `${now(false)} ${label} 실패`, failed: true };
 			this.setStatus(`Git: ${label} 실패`);
 		} finally {
 			this.busy = false;
 			this.running = null;
+			this.progressBase = null;
+			this.showProgress(null);
 		}
 		this.renderViewStatus();
 		this.refreshViews();
 		return ok;
+	}
+
+	private errorNotice(title: string, raw: string) {
+		const { message, settings } = friendlyError(raw);
+		if (!settings) return void new Notice(`${title}: ${message}`, 10000);
+		this.settingsNotice(`${title}: ${message}`);
+	}
+
+	/** 설정에서 고칠 수 있는 문제: 알림에 설정 바로가기를 붙인다 */
+	private settingsNotice(text: string) {
+		const body = document.createDocumentFragment();
+		body.append(text);
+		const button = document.createElement("button");
+		button.textContent = "설정 열기";
+		button.className = "light-git-notice-btn";
+		button.onclick = () => this.openSettings();
+		body.append(button);
+		new Notice(body, 10000);
+	}
+
+	openSettings() {
+		const setting = (this.app as unknown as { setting?: SettingManager }).setting;
+		if (!setting?.open || !setting.openTabById) return void new Notice("설정 > 커뮤니티 플러그인 > Light Git에서 변경하세요.");
+		setting.open();
+		setting.openTabById(this.manifest.id);
+	}
+
+	/** URL이 잘못됐으면 네트워크를 쓰기 전에 알려 준다 */
+	private remoteReady(): boolean {
+		const problem = remoteUrlProblem(this.settings.remoteUrl, Platform.isMobile);
+		if (problem) this.settingsNotice(problem);
+		return !problem;
+	}
+
+	testConnection() {
+		if (!this.remoteReady()) return Promise.resolve(false);
+		const branch = this.settings.branch || "main";
+		return this.run("연결 테스트", async (b) =>
+			(await b.checkRemote()) ? `연결 성공: 원격에 ${branch} 브랜치가 있습니다.` : `연결 성공: 원격에 ${branch} 브랜치가 아직 없어 첫 동기화 때 만들어집니다.`,
+		);
 	}
 
 	private renderViewStatus() {
@@ -257,6 +312,7 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 
 	/** obsidian-git이 켜져 있으면 끌지 먼저 묻는다 (.git 폴더와 설정은 건드리지 않음) */
 	connect() {
+		if (!this.remoteReady()) return Promise.resolve(false);
 		const doConnect = () => this.run("연결", (b) => b.connect());
 		if (!this.obsidianGitEnabled()) return doConnect();
 		new ConfirmModal(
@@ -330,11 +386,12 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 
 	/** 오래 걸리는 작업(분할 clone)의 진행 상황을 알림 하나로 갱신. null이면 닫는다 */
 	private showProgress(msg: string | null) {
-		if (msg === null) {
+		const text = msg ?? this.progressBase;
+		if (text === null) {
 			this.progressNotice?.hide();
 			this.progressNotice = null;
-		} else if (this.progressNotice) this.progressNotice.setMessage(msg);
-		else this.progressNotice = new Notice(msg, 0);
+		} else if (this.progressNotice) this.progressNotice.setMessage(text);
+		else this.progressNotice = new Notice(text, 0);
 	}
 
 	/** 대기 중인 스테이징이 끝날 때까지 (상태를 읽거나 커밋하기 전에) */
@@ -473,7 +530,19 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 			this.conflictNotice?.hide();
 			this.conflictNotice = null;
 		}
-		new Notice(left.length ? `해결됨. 남은 충돌 ${left.length}건` : "모든 충돌을 해결했습니다. '커밋 & 동기화'로 머지를 완료하세요.");
+		new Notice(left.length ? `해결됨. 남은 충돌 ${left.length}건` : "모든 충돌을 해결했습니다. '머지 완료 & 동기화'를 누르세요.");
 		this.refreshViews();
+	}
+
+	/** MergeHost: 머지 화면이 닫힌 뒤 다음 충돌을 열고, 다 끝났으면 머지를 마칠 수 있는 뷰로 간다 */
+	async afterResolution() {
+		try {
+			const b = await this.getBackend();
+			const [next] = await b.conflicts();
+			if (next) await this.openMerge(next);
+			else await this.activateView(SOURCE_CONTROL_VIEW);
+		} catch (e) {
+			new Notice(`충돌 정보를 읽지 못했습니다: ${errorText(e)}`);
+		}
 	}
 }

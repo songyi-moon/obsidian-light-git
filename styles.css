@@ -74,6 +74,10 @@
 .light-git-status-last.is-failed {
 	color: var(--text-error);
 }
+.light-git-notice-btn {
+	display: block;
+	margin-top: 8px;
+}
 .light-git-spinner {
 	flex: none;
 	width: 11px;
@@ -528,6 +532,9 @@ body:not(.is-mobile) .mod-right-split .light-git-view > .light-git-list:last-chi
 .light-git-gutter-btn.is-apply {
 	color: var(--text-accent);
 }
+.light-git-gutter-label {
+	display: none;
+}
 .light-git-merge-mark {
 	display: inline-flex;
 	align-items: center;
@@ -678,6 +685,24 @@ body:not(.is-mobile) .mod-right-split .light-git-view > .light-git-list:last-chi
 	.is-mobile .light-git-merge-gutter {
 		width: auto;
 		gap: 4px;
+	}
+	/* 세로 배치에서는 » « 방향이 의미가 없으므로 글자로 */
+	.light-git-gutter-btn.is-apply,
+	.light-git-gutter-btn.is-ignore,
+	.is-mobile .light-git-gutter-btn.is-apply,
+	.is-mobile .light-git-gutter-btn.is-ignore {
+		width: auto;
+		padding: 0 10px;
+		background: var(--background-modifier-hover);
+		font-family: var(--font-interface);
+		white-space: nowrap;
+	}
+	.light-git-gutter-btn.is-apply svg,
+	.light-git-gutter-btn.is-ignore svg {
+		display: none;
+	}
+	.light-git-gutter-label {
+		display: inline;
 	}
 }
 

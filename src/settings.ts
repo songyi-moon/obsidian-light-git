@@ -77,7 +77,8 @@ export class LightGitSettingTab extends PluginSettingTab {
 			});
 		new Setting(containerEl)
 			.setName("연결")
-			.setDesc("저장소가 없으면 만들고, 원격에 내용이 있으면 받아옵니다. (기존 vault를 처음 올릴 때도 사용)")
+			.setDesc("저장소가 없으면 만들고, 원격에 내용이 있으면 받아옵니다. (기존 vault를 처음 올릴 때도 사용) 연결 테스트는 파일을 건드리지 않고 URL과 읽기 권한만 확인합니다.")
+			.addButton((b) => b.setButtonText("연결 테스트").onClick(() => p.testConnection()))
 			.addButton((b) => b.setButtonText("원격 저장소 연결").setCta().onClick(() => p.connect()));
 
 		new Setting(containerEl).setName("커밋").setHeading();
