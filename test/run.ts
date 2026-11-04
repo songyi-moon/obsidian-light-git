@@ -534,6 +534,43 @@ async function main() {
 	await sync(K.b, "K edit");
 	check("packed repo: sync reads pack only a few times", sh(bare, "show", "main:notes/from-k.md") === "K\n" && K.ad.packReads <= 8, `pack reads=${K.ad.packReads}`);
 
+	// 원격이 그대로면 pull이 파일을 하나씩 확인하지 않는다. 새 커밋이 있거나 지난번에 받다 끊겼으면 확인해서 받는다
+	const Proot = path.join(tmp, "P");
+	fs.mkdirSync(Proot);
+	const pAd = new CountingAdapter(Proot);
+	const P = new IsoBackend(new ObsidianFs(pAd as any), nodeHttp, cfg("p"));
+	await P.connect();
+	const remoteFiles = sh(bare, "ls-tree", "-r", "--name-only", "main").trim().split("\n").length;
+	pAd.reset();
+	await P.pull();
+	check("pull unchanged: no per-file checks", remoteFiles > 20 && pAd.objectChecks < 10, `files=${remoteFiles} checks=${pAd.objectChecks}`);
+	write(Proot, "notes/from-p.md", "P\n");
+	await sync(P, "P edit");
+	pAd.reset();
+	await P.pull();
+	check("pull after own push: no per-file checks", pAd.objectChecks < 10, `checks=${pAd.objectChecks}`);
+	const bigFile = (name: string) => {
+		const data = require("crypto").randomBytes(200 * 1024);
+		write(A.root, name, data);
+		return data as Buffer;
+	};
+	const big1 = bigFile("notes/big-new.bin");
+	await sync(A.b, "big new");
+	await P.pull();
+	check("pull new commit: gets the big file", fs.readFileSync(path.join(Proot, "notes/big-new.bin")).equals(big1) && (await P.changes()).length === 0);
+	const big2 = bigFile("notes/big-cut.bin");
+	await sync(A.b, "big cut");
+	const tipBefore = sh(Proot, "rev-parse", "refs/remotes/origin/main").trim();
+	let packWrites = 0;
+	pAd.failOn = (p) => p.endsWith(".pack") && ++packWrites > 1; // 커밋·트리는 받았고 큰 파일을 받다가 끊김
+	const cut = await P.pull().then(() => false, () => true);
+	pAd.failOn = null;
+	const newTip = sh(bare, "rev-parse", "main").trim();
+	sh(Proot, "cat-file", "-e", newTip);
+	check("pull cut off: origin stays behind though the commit arrived", cut && sh(Proot, "rev-parse", "refs/remotes/origin/main").trim() === tipBefore && tipBefore !== newTip);
+	await P.pull();
+	check("pull after cut off: gets the missing file", fs.readFileSync(path.join(Proot, "notes/big-cut.bin")).equals(big2) && sh(Proot, "rev-parse", "refs/remotes/origin/main").trim() === newTip && (await P.changes()).length === 0, JSON.stringify(await P.changes()));
+
 	server.close();
 	fs.rmSync(tmp, { recursive: true, force: true });
 	console.log(failed ? `\n${failed} FAILED` : "\nALL PASSED");

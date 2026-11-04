@@ -55,6 +55,8 @@ export class CountingAdapter extends MockAdapter {
 	packReads = 0;
 	packReadBytes = 0;
 	indexWrites = 0;
+	/** .git/objects 아래 stat 횟수: 객체를 하나씩 확인한 만큼 늘어난다 */
+	objectChecks = 0;
 	/** 이 조건에 맞는 경로는 null로 되돌릴 때까지 쓰기 실패 (앱이 도중에 꺼진 상황 흉내. isomorphic-git이 한 번은 재시도한다) */
 	failOn: ((p: string) => boolean) | null = null;
 	private check(p: string) {
@@ -62,7 +64,11 @@ export class CountingAdapter extends MockAdapter {
 		if (/(^|\/)index$/.test(p)) this.indexWrites++;
 	}
 	reset() {
-		this.packReads = this.packReadBytes = this.indexWrites = 0;
+		this.packReads = this.packReadBytes = this.indexWrites = this.objectChecks = 0;
+	}
+	async stat(p: string) {
+		if (p.includes(".git/objects/")) this.objectChecks++;
+		return super.stat(p);
 	}
 	async readBinary(p: string) {
 		const b = await super.readBinary(p);
