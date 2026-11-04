@@ -1,12 +1,12 @@
 {
   "name": "obsidian-light-git",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Lightweight Git sync for Obsidian (desktop + iOS)",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "test": "node esbuild.test.mjs && node test/out/run.cjs",
+    "test": "node esbuild.test.mjs && node test/out/run.cjs && node test/out/resilience.cjs",
     "test:ui": "node test/ui/build.mjs && node test/ui/shoot.mjs test/out/ui && node test/ui/shootViews.mjs test/out/ui",
     "test:all": "npm test && npm run test:ui && npm run build && node test/mobileLoad.cjs"
   },
