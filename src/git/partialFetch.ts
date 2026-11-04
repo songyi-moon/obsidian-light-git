@@ -62,7 +62,8 @@ export async function partialFetch(o: PartialFetchOptions): Promise<string | nul
 	const cache = o.cache ?? {};
 
 	// 1) 커밋 + 트리 + 작은 파일
-	if (!(await hasObject(base, tip, cache))) {
+	const hadTip = await hasObject(base, tip, cache);
+	if (!hadTip) {
 		o.onProgress?.("Git: 변경 목록 받는 중…");
 		const haves = await localHaves(base, o.branch, cache);
 		const shallow = await readShallow(o.fs);
@@ -76,6 +77,9 @@ export async function partialFetch(o: PartialFetchOptions): Promise<string | nul
 			await o.fs.writeFile(".git/shallow", [...next].join("\n") + "\n");
 		}
 	}
+
+	// origin 기록은 파일을 다 받은 뒤에만 tip으로 옮겨지므로, 같으면 받을 게 없다 (노트마다 파일을 확인하는 비용을 아낀다)
+	if (hadTip && !o.reuse && (await git.resolveRef({ ...base, ref: `refs/remotes/origin/${o.branch}` }).catch(() => null)) === tip) return tip;
 
 	// 2) 큰 파일: tip 트리에서 아직 없는 blob만 하나씩
 	const blobs = new Map<string, string>();
