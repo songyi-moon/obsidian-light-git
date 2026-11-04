@@ -92,7 +92,7 @@ export class IsoBackend implements GitBackend {
 	 */
 	private cache: object | null = null;
 	private depth = 0;
-	private unpushedCache: { head: string; tip: string | null; count: number } | null = null;
+	private unpushedCache: { head: string; tip: string | null; oids: string[] } | null = null;
 
 	private async op<T>(fn: () => Promise<T>): Promise<T> {
 		if (this.depth++ === 0) this.cache = {};
@@ -970,17 +970,17 @@ export class IsoBackend implements GitBackend {
 	}
 
 	/** 뷰를 새로 그릴 때마다 불리므로 ref만 읽고, HEAD나 원격이 바뀌었을 때만 커밋을 따라가 다시 센다 */
-	private async doUnpushedCount(): Promise<number> {
+	private async doUnpushedCommits(): Promise<string[]> {
 		const { branch, remoteUrl } = this.cfg();
 		const head = await this.headOid();
-		if (!remoteUrl || !head) return 0;
+		if (!remoteUrl || !head) return [];
 		const tip = await git.resolveRef({ ...this.base, ref: `refs/remotes/origin/${branch}` }).catch(() => null);
-		if (tip === head) return 0;
+		if (tip === head) return [];
 		const c = this.unpushedCache;
-		if (c?.head === head && c.tip === tip) return c.count;
-		const count = (await this.unpushedChain(head, tip)).length;
-		this.unpushedCache = { head, tip, count };
-		return count;
+		if (c?.head === head && c.tip === tip) return c.oids;
+		const oids = await this.unpushedChain(head, tip);
+		this.unpushedCache = { head, tip, oids };
+		return oids;
 	}
 
 	// ---------- 공개 메서드: 작업마다 객체 캐시 하나를 공유 (op 참고) ----------
@@ -1007,7 +1007,10 @@ export class IsoBackend implements GitBackend {
 		return this.op(() => this.doPush());
 	}
 	unpushedCount() {
-		return this.op(() => this.doUnpushedCount());
+		return this.op(async () => (await this.doUnpushedCommits()).length);
+	}
+	unpushedCommits() {
+		return this.op(() => this.doUnpushedCommits());
 	}
 	async checkRemote(): Promise<boolean> {
 		const { branch } = this.cfg();

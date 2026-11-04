@@ -5,6 +5,8 @@ import { ConfirmModal } from "./confirmModal";
 import { addPinButton } from "./pinButton";
 
 export const SOURCE_CONTROL_VIEW = "light-git-source-control";
+/** 변경 파일이 이만큼 많으면 검색칸을 보여 주고 폴더별로 묶는다 */
+const MANY_FILES = 15;
 
 /**
  * IntelliJ Commit 창 스타일:
@@ -16,6 +18,7 @@ export const SOURCE_CONTROL_VIEW = "light-git-source-control";
 export class SourceControlView extends ItemView {
 	private messageEl!: HTMLTextAreaElement;
 	private listEl!: HTMLElement;
+	private filterEl!: HTMLInputElement;
 	private commitBtn!: HTMLButtonElement;
 	private hintEl!: HTMLElement;
 	private loading = false;
@@ -68,10 +71,12 @@ export class SourceControlView extends ItemView {
 		addPinButton(this, bar);
 
 		this.statusEl = root.createDiv({ cls: "light-git-status" });
+		this.filterEl = root.createEl("input", { type: "search", cls: "light-git-filter is-hidden", attr: { placeholder: "변경 파일 검색" } });
+		this.filterEl.addEventListener("input", () => this.show());
 		this.listEl = root.createDiv({ cls: "light-git-list" });
 
 		const commitBox = root.createDiv({ cls: "light-git-commit-box" });
-		this.messageEl = commitBox.createEl("textarea", { cls: "light-git-message", attr: { rows: "3", spellcheck: "false" } });
+		this.messageEl = commitBox.createEl("textarea", { cls: "light-git-message", attr: { rows: "3", spellcheck: "false", placeholder: "커밋 메시지" } });
 		this.messageEl.addEventListener("keydown", (e) => {
 			// Ctrl/Cmd+Enter로 커밋 (한글 조합 중 Enter는 무시)
 			if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
@@ -146,8 +151,8 @@ export class SourceControlView extends ItemView {
 		const staged = changes.filter((c) => c.staged);
 		this.stagedOnly = staged.length > 0 && !merging;
 		const count = this.stagedOnly ? staged.length : changes.length + conflicts.length;
-		this.messageEl.placeholder = `커밋 메시지 (비우면: ${this.plugin.defaultMessage(count)})`;
-		this.commitBtn.setText(merging && !conflicts.length ? "머지 완료 & 동기화" : this.stagedOnly ? `${staged.length}개 커밋 & 동기화` : "커밋 & 동기화");
+		this.messageEl.placeholder = count || merging ? `커밋 메시지 (비우면: ${this.plugin.defaultMessage(count)})` : "커밋할 변경 없음";
+		this.commitBtn.setText(merging && !conflicts.length ? "머지 완료 & 동기화" : this.stagedOnly ? `${staged.length}개 커밋 & 동기화` : count ? "커밋 & 동기화" : "동기화");
 		this.hintEl.setText(conflicts.length ? `충돌 ${conflicts.length}건 남음` : merging ? "머지 커밋" : this.stagedOnly ? `${staged.length}/${changes.length} 선택` : changes.length ? `전체 ${changes.length}개` : "");
 		this.render(merging, conflicts, changes, copies);
 		this.renderStatus();
@@ -208,13 +213,34 @@ export class SourceControlView extends ItemView {
 			const g = this.group("conflicts", "충돌", conflicts.length, "is-conflict");
 			for (const p of conflicts) this.row(g, p, "conflict", null, () => this.plugin.openMerge(p));
 		}
+		// 검색은 보기만 줄인다. 커밋 대상은 그대로이고, 충돌은 처리해야 하므로 숨기지 않는다
+		const query = this.filterEl.value.trim().toLowerCase();
+		this.filterEl.toggleClass("is-hidden", !query && changes.length < MANY_FILES);
+		const shown = query ? changes.filter((c) => c.path.toLowerCase().includes(query)) : changes;
 		// 머지 중에는 변경 전체가 머지 커밋에 들어가므로 체크박스를 보여주지 않는다
-		const staged = changes.filter((c) => c.staged);
-		const g = this.group("changes", merging ? "머지됨" : "변경", changes.length, "", merging || !changes.length ? null : staged.length === changes.length ? "all" : staged.length ? "some" : "none", (on) => this.toggle(changes.map((c) => c.path), on));
-		if (!changes.length && !merging) g.createDiv({ cls: "light-git-empty", text: "변경 사항 없음" });
-		for (const c of changes) {
-			const check = merging ? null : c.staged && c.unstaged ? "some" : c.staged ? "all" : "none";
-			this.row(g, c.path, c.type, check, () => this.plugin.openChangeDiff(c.path));
+		const groupCheck = (files: WorkChange[]) => {
+			const staged = files.filter((c) => c.staged);
+			return merging || !files.length ? null : staged.length === files.length ? "all" : staged.length ? "some" : "none";
+		};
+		const g = this.group("changes", merging ? "머지됨" : "변경", query ? `${shown.length}/${changes.length}` : changes.length, "", groupCheck(shown), (on) => this.toggle(shown.map((c) => c.path), on));
+		if (!shown.length && query) g.createDiv({ cls: "light-git-empty", text: "검색 결과 없음" });
+		else if (!changes.length && !merging) g.createDiv({ cls: "light-git-empty", text: "변경 사항 없음" });
+		const fileRows = (parent: HTMLElement, files: WorkChange[]) => {
+			for (const c of files) {
+				const check = merging ? null : c.staged && c.unstaged ? "some" : c.staged ? "all" : "none";
+				this.row(parent, c.path, c.type, check, () => this.plugin.openChangeDiff(c.path));
+			}
+		};
+		if (changes.length < MANY_FILES) fileRows(g, shown);
+		else {
+			const folders = new Map<string, WorkChange[]>();
+			for (const c of shown) {
+				const dir = c.path.slice(0, Math.max(c.path.lastIndexOf("/"), 0));
+				folders.set(dir, [...(folders.get(dir) ?? []), c]);
+			}
+			for (const [dir, files] of [...folders].sort(([a], [b]) => a.localeCompare(b))) {
+				fileRows(this.group(`dir:${dir}`, dir || "(최상위)", files.length, "is-folder", groupCheck(files), (on) => this.toggle(files.map((c) => c.path), on), g), files);
+			}
 		}
 		if (copies.length) {
 			const body = this.group("copies", "충돌 사본", copies.length, "");
@@ -228,8 +254,8 @@ export class SourceControlView extends ItemView {
 	}
 
 	/** 접을 수 있는 그룹 헤더. check가 있으면 '전체 선택' 체크박스 */
-	private group(id: string, title: string, count: number, cls: string, check: "all" | "some" | "none" | null = null, onCheck?: (on: boolean) => void) {
-		const sec = this.listEl.createDiv({ cls: `light-git-group ${cls}` });
+	private group(id: string, title: string, count: number | string, cls: string, check: "all" | "some" | "none" | null = null, onCheck?: (on: boolean) => void, parent = this.listEl) {
+		const sec = parent.createDiv({ cls: `light-git-group ${cls}` });
 		const head = sec.createDiv({ cls: "light-git-group-head" });
 		const chevron = head.createSpan({ cls: "light-git-chevron" });
 		setIcon(chevron, this.collapsed.has(id) ? "chevron-right" : "chevron-down");

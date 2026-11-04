@@ -22,6 +22,7 @@ const merging = {
 		{ path: "old.md", type: "deleted", staged: false, unstaged: true },
 	],
 	unpushedCount: async () => 0,
+	unpushedCommits: async () => ["a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"],
 	log,
 	commitFiles,
 };
@@ -57,6 +58,16 @@ const withCopy = {
 // 패널 5: 충돌을 다 해결한 머지 / 패널 6: 저장소 없음, URL도 없음
 const merged = { ...withCopy, isMerging: async () => true, changes: async () => [{ path: "notes/회의록.md", type: "modified", staged: true, unstaged: false }], unpushedCount: async () => 0 };
 const notConnected = { isRepo: async () => false };
+// 패널 7: 변경 없음 / 패널 8: 변경 파일이 많은 볼트
+const clean = { ...withCopy, changes: async () => [], unpushedCount: async () => 0 };
+const many = {
+	...clean,
+	changes: async () => [
+		...Array.from({ length: 8 }, (_, i) => ({ path: `notes/회의록 ${i + 1}.md`, type: "modified", staged: i === 0, unstaged: i !== 0 })),
+		...Array.from({ length: 6 }, (_, i) => ({ path: `daily/2026-11-0${i + 1}.md`, type: "added", staged: false, unstaged: true })),
+		{ path: "todo.md", type: "modified", staged: false, unstaged: true },
+	],
+};
 const plugin = (backend: unknown): any => ({
 	settings: { remoteUrl: "" },
 	openSettings: () => (window as any).__calls.push(["openSettings"]),
@@ -83,12 +94,14 @@ const panes: [any, unknown, string][] = [
 	[SourceControlView, withCopy, "copies"],
 	[SourceControlView, merged, "merged"],
 	[SourceControlView, notConnected, "notConnected"],
+	[SourceControlView, clean, "clean"],
+	[SourceControlView, many, "many"],
 ];
 for (const [V, backend, id] of panes) {
 	const v = new V({ getViewState: () => ({}), togglePinned() {}, on: () => ({}) }, plugin(backend));
 	const pane = document.createElement("div");
 	pane.id = id;
-	pane.style.cssText = "width:300px;height:520px;background:var(--background-primary);border-radius:8px;overflow:hidden";
+	pane.style.cssText = "flex:none;width:300px;height:520px;background:var(--background-primary);border-radius:8px;overflow:hidden";
 	pane.appendChild(v.contentEl);
 	wrap.appendChild(pane);
 	((window as any).__views ??= {})[id] = v;

@@ -95,10 +95,35 @@
 	opacity: 0.4;
 	pointer-events: none;
 }
+.light-git-filter {
+	flex: none;
+	margin: 6px 8px 2px;
+	width: calc(100% - 16px);
+}
+.light-git-filter.is-hidden {
+	display: none;
+}
 .light-git-list {
 	flex: 1;
 	overflow-y: auto;
 	padding: 4px 0;
+}
+/* 폴더 묶음: 변경 그룹 안에서 한 단계 들여쓰고, 폴더는 머리글에 있으니 행에서는 뺀다 */
+.light-git-group.is-folder > .light-git-group-head {
+	padding-left: 16px;
+}
+.light-git-group.is-folder .light-git-group-title {
+	font-weight: var(--font-normal);
+	color: var(--text-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.light-git-group.is-folder .light-git-file {
+	padding-left: 36px;
+}
+.light-git-group.is-folder .light-git-file-dir {
+	display: none;
 }
 .light-git-group-head {
 	display: flex;
@@ -211,6 +236,20 @@ body:not(.is-mobile) .light-git-file:not(:hover) .light-git-file-actions {
 .is-mobile .light-git-file,
 .is-mobile .light-git-group-head {
 	height: 34px;
+}
+/* 모바일은 화면이 좁으므로 평소 1줄, 입력 중이거나 내용이 있으면 3줄 */
+.is-mobile .light-git-message {
+	resize: none;
+	min-height: 0;
+	height: 2.4em;
+}
+.is-mobile .light-git-message:focus,
+.is-mobile .light-git-message:not(:placeholder-shown) {
+	height: 5.2em;
+}
+.is-mobile .light-git-message:placeholder-shown:not(:focus) {
+	white-space: nowrap;
+	overflow: hidden;
 }
 .light-git-icon.is-active {
 	color: var(--text-accent);

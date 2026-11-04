@@ -372,6 +372,9 @@ async function main() {
 			await me.commit(`u${i}`, true);
 		}
 		check(`${name} unpushed: counts local commits`, (await me.unpushedCount()) === 2);
+		const unpushedOids = await me.unpushedCommits();
+		const recent = (await me.log(2)).map((c) => c.oid);
+		check(`${name} unpushed: lists those commits`, unpushedOids.length === 2 && recent.every((o) => unpushedOids.includes(o)));
 		await me.push();
 		check(`${name} unpushed: 0 after push`, (await me.unpushedCount()) === 0);
 		// 갈라진 뒤 머지: 내 커밋 + 머지 커밋
@@ -387,6 +390,9 @@ async function main() {
 		check(`${name} unpushed: merge has no conflicts`, (await me.pull()).length === 0);
 		const merged = await me.unpushedCount();
 		check(`${name} unpushed: own commit + merge`, merged === 2, `count=${merged}`);
+		const mergeLog = await me.log(10);
+		const mergeOids = await me.unpushedCommits();
+		check(`${name} unpushed: remote commit isn't marked`, !mergeOids.includes(mergeLog.find((c) => c.message === "theirs")?.oid ?? "") && mergeLog.some((c) => c.message === "theirs"));
 		await me.push();
 		check(`${name} unpushed: 0 after merged push`, (await me.unpushedCount()) === 0);
 	};
