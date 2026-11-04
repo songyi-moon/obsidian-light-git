@@ -1,6 +1,6 @@
 {
   "name": "obsidian-light-git",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Lightweight Git sync for Obsidian (desktop + iOS)",
   "main": "main.js",
   "scripts": {

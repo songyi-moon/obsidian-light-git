@@ -56,15 +56,16 @@ export class HistoryView extends ItemView {
 		if (!this.listEl || this.plugin.isBusy()) return;
 		try {
 			const b = await this.plugin.getBackend();
-			const commits = (await b.isRepo()) ? await b.log(this.limit) : [];
-			this.render(commits);
+			const repo = await b.isRepo();
+			const commits = repo ? await b.log(this.limit) : [];
+			this.render(commits, new Set(repo ? await b.unpushedCommits() : []));
 		} catch (e) {
 			this.listEl.empty();
 			this.listEl.createDiv({ cls: "light-git-empty", text: `오류: ${e instanceof Error ? e.message : String(e)}` });
 		}
 	}
 
-	private render(commits: CommitInfo[]) {
+	private render(commits: CommitInfo[], unpushed: Set<string>) {
 		this.listEl.empty();
 		if (!commits.length) {
 			this.listEl.createDiv({ cls: "light-git-empty", text: "커밋이 없습니다." });
@@ -74,7 +75,9 @@ export class HistoryView extends ItemView {
 			const item = this.listEl.createDiv({ cls: "light-git-commit" });
 			const head = item.createDiv({ cls: "light-git-commit-head" });
 			head.createDiv({ cls: "light-git-commit-msg", text: c.message.split("\n")[0] });
-			head.createDiv({ cls: "light-git-commit-meta", text: `${c.author} · ${relativeTime(c.timestamp)} · ${c.oid.slice(0, 7)}` });
+			const meta = head.createDiv({ cls: "light-git-commit-meta" });
+			if (unpushed.has(c.oid)) meta.createSpan({ cls: "light-git-status-unpushed", text: "↑ push 대기 · " });
+			meta.createSpan({ text: `${c.author} · ${relativeTime(c.timestamp)} · ${c.oid.slice(0, 7)}` });
 			const files = item.createDiv({ cls: "light-git-commit-files" });
 			files.hide();
 			head.onclick = async () => {

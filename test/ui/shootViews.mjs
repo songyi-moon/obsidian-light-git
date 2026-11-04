@@ -72,6 +72,52 @@ const empty = await page.evaluate(() => {
 check("not connected without URL: goes to settings", empty.text === "설정 열기" && empty.calls === '[["openSettings"]]', JSON.stringify(empty));
 await page.screenshot({ path: `${out}/views.png` });
 
+// 변경이 없으면 커밋 문구를 보여주지 않는다
+const clean = await page.evaluate(() => [document.querySelector("#clean .light-git-commit-btn").textContent, document.querySelector("#clean .light-git-message").placeholder]);
+check("no changes: button is plain sync", clean[0] === "동기화" && clean[1] === "커밋할 변경 없음", JSON.stringify(clean));
+
+// History: 아직 올리지 않은 커밋만 표시
+const marks = await page.evaluate(() => [...document.querySelectorAll("#history .light-git-commit-meta")].map((m) => m.textContent.includes("push 대기")));
+check("history marks unpushed commits", JSON.stringify(marks) === "[true,false,false]", JSON.stringify(marks));
+
+// 파일이 많으면 폴더별로 묶고 검색칸을 보여준다
+const hiddenFilter = await page.evaluate(() => getComputedStyle(document.querySelector("#staging .light-git-filter")).display === "none");
+check("few files: no search box or folders", hiddenFilter && (await page.evaluate(() => !document.querySelector("#staging .is-folder"))));
+check("not connected: no search box", await page.evaluate(() => getComputedStyle(document.querySelector("#notConnected .light-git-filter")).display === "none"));
+const folders = () => page.evaluate(() => [...document.querySelectorAll("#many .is-folder")].map((g) => {
+  const c = g.querySelector(".light-git-group-head input");
+  return [g.querySelector(".light-git-group-title").textContent, g.querySelector(".light-git-group-count").textContent, c.indeterminate ? "some" : c.checked ? "all" : "none"];
+}));
+const f0 = await folders();
+check("many files: grouped by folder", JSON.stringify(f0) === JSON.stringify([["(최상위)", "1", "none"], ["daily", "6", "none"], ["notes", "8", "some"]]), JSON.stringify(f0));
+await page.screenshot({ path: `${out}/views-many.png`, clip: { x: 2212, y: 0, width: 300, height: 520 } });
+await page.evaluate(() => { window.__calls.length = 0; document.querySelectorAll("#many .is-folder .light-git-group-head input")[1].click(); });
+const folderCall = await page.evaluate(() => { const c = window.__calls[0]; window.__calls.length = 0; return [c[0], c[1].length]; });
+check("folder checkbox selects its files", JSON.stringify(folderCall) === '["stage",6]', JSON.stringify(folderCall));
+await page.evaluate(() => { const g = document.querySelectorAll("#many .is-folder")[1]; g.querySelector(".light-git-group-head").click(); });
+check("folder collapses", await page.evaluate(() => getComputedStyle(document.querySelectorAll("#many .is-folder")[1].querySelector(".light-git-group-body")).display === "none"));
+const search = (q) => page.evaluate((q) => {
+  const i = document.querySelector("#many .light-git-filter");
+  i.value = q;
+  i.dispatchEvent(new Event("input"));
+  return {
+    files: document.querySelectorAll("#many .light-git-file").length,
+    count: document.querySelector("#many .light-git-group-count").textContent,
+    empty: document.querySelector("#many .light-git-empty")?.textContent ?? "",
+    hint: document.querySelector("#many .light-git-commit-hint").textContent,
+    focusKept: document.body.contains(i),
+  };
+}, q);
+const s1f = await search("회의록 3");
+check("search narrows the list, commit target unchanged", s1f.files === 1 && s1f.count === "1/15" && s1f.hint.endsWith("/15 선택") && s1f.focusKept, JSON.stringify(s1f));
+await page.evaluate(() => { window.__calls.length = 0; document.querySelector("#many .light-git-group-head input").click(); });
+const searchCall = await page.evaluate(() => { const c = window.__calls[0]; window.__calls.length = 0; return c; });
+check("select-all while searching only touches shown files", JSON.stringify(searchCall) === JSON.stringify(["stage", ["notes/회의록 3.md"]]), JSON.stringify(searchCall));
+const s2f = await search("없는파일");
+check("search: no results message", s2f.files === 0 && s2f.empty === "검색 결과 없음", JSON.stringify(s2f));
+const s3f = await search("");
+check("search cleared: all files back", s3f.files === 15 && s3f.count === "15", JSON.stringify(s3f));
+
 // 체크박스/버튼 동작
 const instant = await page.evaluate(() => {
   const rows = document.querySelectorAll("#staging .light-git-file input");
@@ -163,7 +209,20 @@ await open("#mobile", { width: 1000, height: 560, deviceScaleFactor: 2 });
 const touchVisible = await page.evaluate(() => getComputedStyle(document.querySelector("#staging .light-git-file-actions")).visibility === "visible");
 const rowH = await page.evaluate(() => document.querySelector("#staging .light-git-file").getBoundingClientRect().height);
 check("touch: row actions always visible, rows ≥ 34px", touchVisible && rowH >= 34, `h=${rowH}`);
-await page.screenshot({ path: `${out}/views-mobile.png` });
+await page.screenshot({ path: `${out}/views-mobile.png`, clip: { x: 0, y: 0, width: 2540, height: 530 } });
+// 커밋 입력칸: 평소 1줄, 입력하면 3줄이고 버튼은 제자리
+const box = () => page.evaluate(() => {
+  const m = document.querySelector("#clean .light-git-message");
+  return [m.getBoundingClientRect().height, document.querySelector("#clean .light-git-commit-btn").getBoundingClientRect().top];
+});
+const idle = await box();
+await page.focus("#clean .light-git-message");
+const focused = await box();
+await page.evaluate(() => document.activeElement.blur());
+await page.type("#clean .light-git-message", "메시지");
+await page.evaluate(() => document.activeElement.blur());
+const typed = await box();
+check("touch: message is one line until used", idle[0] < 40 && focused[0] > idle[0] * 1.5 && typed[0] === focused[0] && focused[1] === idle[1], JSON.stringify({ idle, focused, typed }));
 
 // Diff 모달: 넓은 화면은 나란히로 시작, 전환 버튼으로 한 줄
 await open("", { width: 1200, height: 700 });

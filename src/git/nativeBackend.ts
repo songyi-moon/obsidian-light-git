@@ -213,10 +213,15 @@ export class NativeBackend implements GitBackend {
 	}
 
 	async unpushedCount(): Promise<number> {
+		return (await this.unpushedCommits()).length;
+	}
+
+	async unpushedCommits(): Promise<string[]> {
 		const { branch, remoteUrl } = this.cfg();
-		if (!remoteUrl || !(await this.hasHead())) return 0;
-		const tracked = await this.run(["rev-list", "--count", "--first-parent", `refs/remotes/origin/${branch}..HEAD`]);
+		if (!remoteUrl || !(await this.hasHead())) return [];
+		const tracked = await this.run(["rev-list", "--first-parent", `refs/remotes/origin/${branch}..HEAD`]);
 		// 원격 추적 ref가 없으면 아직 한 번도 올리지 않은 것
-		return Number(tracked.code === 0 ? tracked.stdout : await this.git("rev-list", "--count", "--first-parent", "HEAD"));
+		const out = tracked.code === 0 ? tracked.stdout : await this.git("rev-list", "--first-parent", "HEAD");
+		return out.split("\n").map((l) => l.trim()).filter(Boolean);
 	}
 }
