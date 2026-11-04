@@ -1,11 +1,12 @@
 import esbuild from "esbuild";
 await esbuild.build({
-  entryPoints: ["test/run.ts"],
+  entryPoints: ["test/run.ts", "test/resilience.ts"],
   bundle: true,
   platform: "node",
   format: "cjs",
   target: "node18",
-  outfile: "test/out/run.cjs",
+  outdir: "test/out",
+  outExtension: { ".js": ".cjs" },
   external: ["obsidian"],
   logLevel: "warning",
 });

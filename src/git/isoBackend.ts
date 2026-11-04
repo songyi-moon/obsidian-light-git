@@ -9,6 +9,8 @@ const MERGE_HEAD = ".git/MERGE_HEAD";
 const CONFLICTS = ".git/LIGHT_GIT_CONFLICTS";
 /** 연결(clone)이 끝나기 전에 앱이 꺼졌는지 표시. 내용은 CloneState */
 const CLONING = ".git/LIGHT_GIT_CLONING";
+/** pull이 볼트 파일을 다 쓰기 전에 앱이 꺼졌는지 표시. 내용은 PullState */
+const PULLING = ".git/LIGHT_GIT_PULLING";
 /** 이 플러그인이 만든 저장소 표시 (.git/config) */
 const OWNED_KEY = "lightgit.owned";
 const RESUME_MSG = "이전 연결이 중간에 멈췄습니다. 설정에서 '원격 저장소 연결'을 다시 실행하세요 (받은 부분부터 이어서 합니다).";
@@ -46,6 +48,16 @@ const OWN_GITDIR = ".lightgit";
 interface CloneState {
 	/** 볼트가 마지막으로 본 원격 커밋 (기존 .git의 origin/브랜치). 모르면 null */
 	base: string | null;
+}
+
+/** .git/LIGHT_GIT_PULLING 내용 */
+interface PullState {
+	/** pull 전 HEAD */
+	from: string;
+	/** 받은 원격 커밋 */
+	theirs: string;
+	/** 충돌이 나서 파일을 직접 쓰는 중 (브랜치는 from에 그대로) */
+	conflict: boolean;
 }
 
 type Blob = { oid: string; mode: number };
@@ -93,6 +105,9 @@ export class IsoBackend implements GitBackend {
 	private cache: object | null = null;
 	private depth = 0;
 	private unpushedCache: { head: string; tip: string | null; oids: string[] } | null = null;
+	/** 이 인스턴스가 지금 pull로 파일을 쓰는 중 (PULLING 표시가 끊긴 흔적이 아님) */
+	private pullActive = false;
+	private finishing: Promise<void> | null = null;
 
 	private async op<T>(fn: () => Promise<T>): Promise<T> {
 		if (this.depth++ === 0) this.cache = {};
@@ -424,6 +439,7 @@ export class IsoBackend implements GitBackend {
 	}
 
 	private async doChanges(): Promise<WorkChange[]> {
+		await this.finishPull();
 		const matrix = await git.statusMatrix({ ...this.base });
 		const out: WorkChange[] = [];
 		// statusMatrix 값: head/workdir 0=없음 1=HEAD와 같음 2=다름, stage 0=없음 1=HEAD와 같음 2=작업 파일과 같음 3=둘 다와 다름
@@ -433,7 +449,33 @@ export class IsoBackend implements GitBackend {
 			if (!staged && !unstaged) continue;
 			out.push({ path, type: head === 0 ? "added" : workdir === 0 ? "deleted" : "modified", staged, unstaged });
 		}
-		return out;
+		return this.joinNormalizedNames(out);
+	}
+
+	/**
+	 * iOS/macOS 파일 시스템은 한글 이름의 조합 방식(NFC/NFD)이 달라도 같은 파일로 찾지만, 폴더 목록은 저장된 이름 그대로 돌려준다.
+	 * 그러면 커밋에 있는 이름과 달라 '삭제 + 추가'로 보이므로 한 파일로 되돌린다.
+	 * 커밋에 있는 이름으로 파일을 찾을 수 있을 때만 합치므로, 두 이름이 정말 다른 파일인 시스템에서는 그대로 둔다.
+	 */
+	private async joinNormalizedNames(changes: WorkChange[]): Promise<WorkChange[]> {
+		const nfc = (p: string) => p.normalize("NFC");
+		const added = changes.filter((c) => c.type === "added" && nfc(c.path) !== c.path.normalize("NFD"));
+		if (!added.length) return changes;
+		const drop = new Set<WorkChange>();
+		const out: WorkChange[] = [];
+		for (const c of changes) {
+			const twin = c.type === "deleted" ? added.find((a) => a.path !== c.path && nfc(a.path) === nfc(c.path)) : undefined;
+			if (!twin || !(await this.exists(c.path))) {
+				out.push(c);
+				continue;
+			}
+			drop.add(twin);
+			const data = await this.fs.readFile(c.path);
+			const inHead = await this.readBlobAt("HEAD", c.path);
+			const same = !!inHead && (await git.hashBlob({ object: data })).oid === (await git.hashBlob({ object: inHead })).oid;
+			if (!same || c.staged) out.push({ path: c.path, type: "modified", staged: c.staged, unstaged: !c.staged });
+		}
+		return out.filter((c) => !drop.has(c));
 	}
 
 	private async doStage(paths: string[]): Promise<void> {
@@ -462,10 +504,12 @@ export class IsoBackend implements GitBackend {
 	}
 
 	async isMerging(): Promise<boolean> {
+		await this.finishPull();
 		return !!(await this.readMergeHead());
 	}
 
 	async conflicts(): Promise<string[]> {
+		await this.finishPull();
 		if (!(await this.readMergeHead())) return [];
 		const rec = await this.readConflictRecord();
 		const unresolved: string[] = [];
@@ -663,6 +707,7 @@ export class IsoBackend implements GitBackend {
 
 	private async doCommit(message: CommitMessage, stagedOnly = false): Promise<number> {
 		if (await this.readCloning()) throw new Error(RESUME_MSG);
+		await this.finishPull();
 		const mergeHead = await this.readMergeHead();
 		if (mergeHead) {
 			const unresolved = await this.conflicts();
@@ -706,6 +751,7 @@ export class IsoBackend implements GitBackend {
 		const { branch, remoteUrl } = this.cfg();
 		if (!remoteUrl) return [];
 		if (await this.readCloning()) throw new Error(RESUME_MSG);
+		await this.finishPull();
 		if (await this.readMergeHead()) return this.conflicts();
 		const head = await this.headOid();
 		if (!head) {
@@ -723,30 +769,87 @@ export class IsoBackend implements GitBackend {
 		// 로컬이 앞서 있기만 하면(원격 새 커밋 없음) merge/checkout은 할 일이 없다 — checkout은 vault 전체를 훑으므로 비싸다
 		if (await git.isDescendent({ ...this.base, oid: head, ancestor: theirs, depth: -1 }).catch(() => false)) return [];
 		await this.assertNoOverlap(head, theirs);
-		const message = `Merge remote-tracking branch 'origin/${branch}'`;
+		// git.merge는 브랜치를 먼저 옮기고 파일은 그 뒤에 쓴다. 그 사이에 꺼지면 아직 안 쓴 옛 파일이 '내 변경'으로 보여 다음 동기화가 원격 변경을 되돌린다.
+		await this.fs.writeFile(PULLING, JSON.stringify({ from: head, theirs, conflict: false } satisfies PullState));
+		this.pullActive = true;
 		try {
-			// abortOnConflict:false는 충돌 시 결과 트리의 '모든' 파일을 폴더 단위로 동시에 다시 써서 큰 볼트에선 메모리가 터진다
-			await git.merge({ ...this.base, ours: branch, theirs, author: this.author, abortOnConflict: true, allowUnrelatedHistories: true, message });
-		} catch (e) {
-			if (!(e instanceof git.Errors.MergeConflictError)) throw e;
-			const rec = await this.writeConflictedMerge(head, theirs);
-			if (!rec.paths.length) {
-				await git.commit({ ...this.base, message, author: this.author, parent: [head, theirs] });
-				return [];
+			let conflicts: string[] = [];
+			try {
+				// abortOnConflict:false는 충돌 시 결과 트리의 '모든' 파일을 폴더 단위로 동시에 다시 써서 큰 볼트에선 메모리가 터진다
+				await git.merge({ ...this.base, ours: branch, theirs, author: this.author, abortOnConflict: true, allowUnrelatedHistories: true, message: this.mergeMessage() });
+				await git.checkout({ ...this.base, ref: branch, ...BATCHED });
+			} catch (e) {
+				if (!(e instanceof git.Errors.MergeConflictError)) throw e;
+				await this.fs.writeFile(PULLING, JSON.stringify({ from: head, theirs, conflict: true } satisfies PullState));
+				conflicts = await this.applyConflictedMerge(head, theirs, false);
 			}
-			await this.fs.writeFile(MERGE_HEAD, theirs + "\n");
-			await this.fs.writeFile(CONFLICTS, JSON.stringify(rec));
-			return rec.paths;
+			await this.fs.unlink(PULLING);
+			return conflicts;
+		} finally {
+			this.pullActive = false;
 		}
-		await git.checkout({ ...this.base, ref: branch, ...BATCHED });
-		return [];
+	}
+
+	private mergeMessage(): string {
+		return `Merge remote-tracking branch 'origin/${this.cfg().branch}'`;
+	}
+
+	/** 충돌 merge를 파일에 쓰고 머지 중 상태를 남긴다 (충돌이 없었으면 커밋까지). 남은 충돌 파일을 돌려준다. */
+	private async applyConflictedMerge(head: string, theirs: string, resuming: boolean): Promise<string[]> {
+		const rec = await this.writeConflictedMerge(head, theirs, resuming);
+		if (!rec.paths.length) {
+			await git.commit({ ...this.base, message: this.mergeMessage(), author: this.author, parent: [head, theirs] });
+			return [];
+		}
+		await this.fs.writeFile(CONFLICTS, JSON.stringify(rec));
+		await this.fs.writeFile(MERGE_HEAD, theirs + "\n");
+		return rec.paths;
+	}
+
+	/** 이전 pull이 파일을 다 쓰기 전에 멈췄으면 끝까지 맞춘다. 진행 중인 pull은 건드리지 않고, 동시에 불려도 한 번만 한다. */
+	private finishPull(): Promise<void> {
+		if (this.pullActive) return Promise.resolve();
+		return (this.finishing ??= this.op(() => this.doFinishPull()).finally(() => {
+			this.finishing = null;
+		}));
+	}
+
+	private async doFinishPull(): Promise<void> {
+		let st: PullState;
+		try {
+			st = JSON.parse(String(await this.fs.readFile(PULLING, { encoding: "utf8" })));
+		} catch {
+			return; // 표시 없음 (또는 쓰다가 꺼짐: 이 경우 아직 아무것도 바꾸지 않았다)
+		}
+		if (!(await this.readMergeHead())) {
+			const head = await this.headOid();
+			if (head && head !== st.from) {
+				const before = await this.treeBlobs(st.from);
+				for (const c of await this.diffTrees(st.from, head)) {
+					await this.keepUnknownEdit(c.path, [before.get(c.path)?.oid, c.oid]);
+					await this.applyBlob(c.path, c.oid ? { oid: c.oid, mode: c.mode! } : undefined);
+				}
+			} else if (head && st.conflict) {
+				await this.applyConflictedMerge(head, st.theirs, true);
+			}
+		}
+		await this.fs.unlink(PULLING);
+	}
+
+	/** 볼트 파일이 known 중 어느 내용도 아니면 (앱이 꺼진 뒤 사용자가 고쳤거나 쓰다 끊김) 덮어쓰기 전에 '(충돌 사본)'으로 보관한다 */
+	private async keepUnknownEdit(path: string, known: (string | undefined)[]) {
+		const data = await this.fs.readFile(path).catch(() => null);
+		if (!(data instanceof Uint8Array)) return;
+		if (known.includes((await git.hashBlob({ object: data })).oid)) return;
+		await this.fs.writeFile(await this.freePath(conflictCopyPath(path, conflictStamp())), data);
 	}
 
 	/**
 	 * 충돌이 있는 merge를 작업 파일과 index에 반영한다. 원격이 바꾼 파일만 하나씩:
 	 * 원격만 바꿈 → 원격 것, 양쪽이 겹치지 않게 바꿈 → 자동 병합, 겹침 → 충돌 마커, 한쪽 삭제·바이너리 → 마커 없는 충돌(내 것 유지).
+	 * resuming: 끊긴 merge를 다시 쓰는 중이라 그사이 사용자가 고친 내용은 사본으로 보관한다.
 	 */
-	private async writeConflictedMerge(head: string, theirs: string): Promise<ConflictRecord> {
+	private async writeConflictedMerge(head: string, theirs: string, resuming: boolean): Promise<ConflictRecord> {
 		let base: string | null = null;
 		try {
 			base = (await git.findMergeBase({ ...this.base, oids: [head, theirs] }))[0] ?? null;
@@ -757,6 +860,7 @@ export class IsoBackend implements GitBackend {
 		for (const { path, base: b, ours: o, theirs: t } of await this.threeWay(base, head, theirs)) {
 			if (o?.oid === t?.oid) continue;
 			if (o?.oid === b?.oid) {
+				if (resuming) await this.keepUnknownEdit(path, [o?.oid, t?.oid]);
 				await this.applyBlob(path, t);
 				continue;
 			}
@@ -769,7 +873,9 @@ export class IsoBackend implements GitBackend {
 			const regions = buildRegions(texts[0]!, texts[1]!, texts[2]!);
 			applyNonConflicting(regions);
 			const conflicted = regions.some((r) => r.kind === "conflict");
-			await this.fs.writeFile(path, conflicted ? conflictMarkerText(regions) : mergedText(regions));
+			const merged = conflicted ? conflictMarkerText(regions) : mergedText(regions);
+			if (resuming) await this.keepUnknownEdit(path, [o?.oid, (await git.hashBlob({ object: new TextEncoder().encode(merged) })).oid]);
+			await this.fs.writeFile(path, merged);
 			if (conflicted) rec.paths.push(path);
 			else await git.add({ ...this.base, filepath: path });
 		}
