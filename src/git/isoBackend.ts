@@ -1,5 +1,5 @@
 import * as git from "isomorphic-git";
-import { partialFetch } from "./partialFetch";
+import { fetchTreesOnly, partialFetch, type PartialFetchOptions } from "./partialFetch";
 import { applyNonConflicting, buildRegions, conflictMarkerText, mergedText } from "../merge/mergeModel";
 import { messageText, type CommitInfo, type CommitMessage, type ConflictVersions, type FileChange, type GitBackend, type GitConfig, type WorkChange } from "./types";
 
@@ -7,6 +7,15 @@ import { messageText, type CommitInfo, type CommitMessage, type ConflictVersions
 const TMP_REF = "light-git-push-step";
 const MERGE_HEAD = ".git/MERGE_HEAD";
 const CONFLICTS = ".git/LIGHT_GIT_CONFLICTS";
+/** 연결(clone)이 끝나기 전에 앱이 꺼졌는지 표시. 내용은 CloneState */
+const CLONING = ".git/LIGHT_GIT_CLONING";
+/** 이 플러그인이 만든 저장소 표시 (.git/config) */
+const OWNED_KEY = "lightgit.owned";
+const RESUME_MSG = "이전 연결이 중간에 멈췄습니다. 설정에서 '원격 저장소 연결'을 다시 실행하세요 (받은 부분부터 이어서 합니다).";
+/** git.add 한 번에 넣을 최대 파일 수. index는 묶음마다 한 번만 다시 쓴다 (파일마다 쓰면 노트 2,000개에 index 2,000번) */
+const ADD_BATCH = 200;
+/** 다른 기기 것으로 덮어쓰면 이 플러그인이 꺼지거나(플러그인 목록) 설정이 바뀌는 경로: 기기에 있으면 항상 기기 것을 둔다 */
+const KEEP_LOCAL = [".obsidian/community-plugins.json", ".obsidian/plugins/"];
 const DEFAULT_GITIGNORE = [
 	".obsidian/workspace.json",
 	".obsidian/workspace-mobile.json",
@@ -20,16 +29,26 @@ interface Fs {
 	readFile(path: string, opts?: { encoding?: string }): Promise<string | Uint8Array>;
 	writeFile(path: string, data: string | Uint8Array): Promise<void>;
 	unlink(path: string): Promise<void>;
-	lstat(path: string): Promise<{ size: number }>;
+	lstat(path: string): Promise<{ size: number; isDirectory(): boolean }>;
 	mkdir(path: string): Promise<void>;
 	readdir(path: string): Promise<string[]>;
 	/** 플러그인 저장소 폴더 (ObsidianFs.gitDir 참고) */
 	gitDir: string;
 }
 
-/** 볼트의 .git pack이 이보다 크면 PC git이 만든 저장소로 보고 열지 않는다 (isomorphic-git이 pack을 통째로 메모리에 올림) */
-const HEAVY_PACK = 32 * 1024 * 1024;
+/**
+ * 다른 도구(obsidian-git, PC git)가 만든 .git은 열지 않고 플러그인 저장소를 여기에 만든다.
+ * 그런 .git은 전체 히스토리가 큰 pack 하나라, isomorphic-git이 작업마다 pack을 통째로 메모리에 올린다.
+ */
 const OWN_GITDIR = ".lightgit";
+
+/** .git/LIGHT_GIT_CLONING 내용 */
+interface CloneState {
+	/** 볼트가 마지막으로 본 원격 커밋 (기존 .git의 origin/브랜치). 모르면 null */
+	base: string | null;
+}
+
+type Blob = { oid: string; mode: number };
 
 /** .git/LIGHT_GIT_CONFLICTS 내용 */
 interface ConflictRecord {
@@ -66,9 +85,26 @@ export class IsoBackend implements GitBackend {
 		private onProgress: (msg: string | null) => void = () => {},
 	) {}
 
+	/**
+	 * 작업 하나(connect/pull/push…) 동안 모든 isomorphic-git 호출이 공유하는 객체 캐시.
+	 * 캐시 없이 부르면 호출마다 pack 파일 전체를 다시 읽고 SHA-1 검증까지 한다.
+	 * 작업이 끝나면 버린다 (pack을 계속 메모리에 두지 않도록).
+	 */
+	private cache: object | null = null;
+	private depth = 0;
+
+	private async op<T>(fn: () => Promise<T>): Promise<T> {
+		if (this.depth++ === 0) this.cache = {};
+		try {
+			return await fn();
+		} finally {
+			if (--this.depth === 0) this.cache = null;
+		}
+	}
+
 	private get base() {
 		// 런타임엔 promise 기반 평면 fs로 인식된다 (isomorphic-git의 isPromiseFs 검사)
-		return { fs: this.fs as unknown as git.FsClient, dir: this.dir };
+		return { fs: this.fs as unknown as git.FsClient, dir: this.dir, cache: this.cache ?? {} };
 	}
 
 	private get remote() {
@@ -106,13 +142,15 @@ export class IsoBackend implements GitBackend {
 		return this.exists(".git/config");
 	}
 
-	async connect(): Promise<string> {
+	private async doConnect(): Promise<string> {
 		const { branch, remoteUrl } = this.cfg();
 		if (!remoteUrl) throw new Error("원격 저장소 URL을 설정에서 입력하세요.");
-		if (await this.hasHeavyGit()) await this.useOwnGitDir();
+		let base: string | null = null;
+		if (this.fs.gitDir === ".git" && (await this.isRepo()) && !(await this.isOwnRepo())) base = await this.useOwnGitDir(branch);
 		if (!(await this.isRepo())) {
 			await git.init({ ...this.base, defaultBranch: branch });
 		}
+		await git.setConfig({ ...this.base, path: OWNED_KEY, value: "true" });
 		await git.addRemote({ ...this.base, remote: "origin", url: remoteUrl, force: true });
 		await git.setConfig({ ...this.base, path: `branch.${branch}.remote`, value: "origin" });
 		await git.setConfig({ ...this.base, path: `branch.${branch}.merge`, value: `refs/heads/${branch}` });
@@ -122,31 +160,57 @@ export class IsoBackend implements GitBackend {
 			if (!(await this.exists(".gitignore"))) await this.fs.writeFile(".gitignore", DEFAULT_GITIGNORE);
 			return "원격 저장소가 비어 있습니다. 동기화하면 현재 vault가 올라갑니다.";
 		}
+		// 지난번 연결이 중간에 끊겼으면 이어서 (HEAD는 이미 있어도 볼트 파일은 다 안 써졌을 수 있다)
+		const pending = await this.readCloning();
+		if (pending) return this.checkoutRemote(pending.base);
 		if (await this.headOid()) {
 			const conflicts = await this.pull();
 			return conflicts.length ? `원격과 병합 중 충돌 ${conflicts.length}건` : "원격과 병합했습니다.";
 		}
-		await this.checkoutRemote(true);
-		return "원격 저장소를 받아왔습니다.";
+		return this.checkoutRemote(base);
 	}
 
-	/** PC git으로 clone한 볼트처럼 .git에 큰 pack이 있는가 */
-	private async hasHeavyGit(): Promise<boolean> {
-		if (this.fs.gitDir !== ".git") return false;
-		const dir = ".git/objects/pack";
-		let total = 0;
-		for (const name of await this.fs.readdir(dir).catch(() => [] as string[])) {
-			if (name.endsWith(".pack")) total += (await this.fs.lstat(`${dir}/${name}`)).size;
-		}
-		return total > HEAVY_PACK;
+	/** 이 플러그인이 만든 .git인가 */
+	private async isOwnRepo(): Promise<boolean> {
+		const owned = await git.getConfig({ ...this.base, path: OWNED_KEY }).catch(() => undefined);
+		if (owned === true || owned === "true") return true;
+		// 0.1.4까지는 표시를 남기지 않았다. 이 플러그인의 clone은 항상 shallow이고, obsidian-git 기본 clone은 전체 히스토리다.
+		return this.exists(".git/shallow");
 	}
 
-	/** 기존 .git은 그대로 두고 플러그인 저장소를 .lightgit에 만든다. 양쪽 git 모두 .lightgit을 무시하게 한다. */
-	private async useOwnGitDir() {
+	/**
+	 * 기존 .git은 그대로 두고 플러그인 저장소를 .lightgit에 만든다. 양쪽 git 모두 .lightgit을 무시하게 한다.
+	 * 기존 저장소가 마지막으로 본 원격 커밋을 돌려준다 (볼트 파일이 '안 바뀐 옛 버전'인지 '이 기기에서 고친 것'인지 가리는 기준).
+	 */
+	private async useOwnGitDir(branch: string): Promise<string | null> {
+		const base = await this.readForeignRemoteTip(branch);
 		await this.ignoreIn(".git/info", OWN_GITDIR + "/");
 		this.fs.gitDir = OWN_GITDIR;
 		if (!(await this.exists(".git"))) await this.fs.mkdir(".git"); // = .lightgit
 		await this.ignoreIn(".git/info", OWN_GITDIR + "/"); // 이제 .lightgit/info/exclude
+		return base;
+	}
+
+	/** 기존 .git의 refs/remotes/origin/<branch>. pack을 열지 않도록 ref 파일만 직접 읽는다. */
+	private async readForeignRemoteTip(branch: string): Promise<string | null> {
+		const ref = `refs/remotes/origin/${branch}`;
+		const text = (p: string) => this.fs.readFile(p, { encoding: "utf8" }).then(String, () => "");
+		const loose = (await text(`.git/${ref}`)).trim();
+		if (OID_RE.test(loose)) return loose;
+		for (const line of (await text(".git/packed-refs")).split("\n")) {
+			const [oid, name] = line.trim().split(" ");
+			if (name === ref && OID_RE.test(oid)) return oid;
+		}
+		return null;
+	}
+
+	private async readCloning(): Promise<CloneState | null> {
+		try {
+			const st = JSON.parse(String(await this.fs.readFile(CLONING, { encoding: "utf8" })));
+			return { base: typeof st?.base === "string" && OID_RE.test(st.base) ? st.base : null };
+		} catch {
+			return null;
+		}
 	}
 
 	private async ignoreIn(infoDir: string, line: string) {
@@ -157,74 +221,209 @@ export class IsoBackend implements GitBackend {
 		await this.fs.writeFile(file, cur + (cur && !cur.endsWith("\n") ? "\n" : "") + line + "\n");
 	}
 
-	/** 큰 저장소를 메모리 초과 없이 받는다 (partialFetch 참고). 서버가 지원하지 않으면 null. */
-	private partialFetch(reuse?: (path: string, oid: string) => Promise<boolean>): Promise<string | null> {
-		return partialFetch({ fs: this.fs, dir: this.dir, ...this.remote, branch: this.cfg().branch, onProgress: this.onProgress, reuse });
+	private fetchOptions(reuse?: PartialFetchOptions["reuse"]): PartialFetchOptions {
+		return { fs: this.fs, dir: this.dir, ...this.remote, branch: this.cfg().branch, onProgress: this.onProgress, reuse, cache: this.cache ?? undefined };
 	}
 
-	/** 볼트에 있는 파일이 원격 blob과 같으면 그 파일로 blob과 index를 채운다 (다시 받지 않음) */
-	private async adoptLocal(path: string, oid: string): Promise<boolean> {
-		const data = await this.fs.readFile(path).catch(() => null);
-		if (!(data instanceof Uint8Array)) return false;
-		if ((await git.hashBlob({ object: data })).oid !== oid) return false;
-		await git.add({ ...this.base, filepath: path, force: true });
-		return true;
+	/** 큰 저장소를 메모리 초과 없이 받는다 (partialFetch 참고). 서버가 지원하지 않으면 null. */
+	private partialFetch(reuse?: PartialFetchOptions["reuse"]): Promise<string | null> {
+		return partialFetch(this.fetchOptions(reuse));
+	}
+
+	/**
+	 * 볼트 파일들을 index에 넣는다 (내용 blob도 저장됨). 파일마다 index를 다시 쓰지 않도록 묶어서,
+	 * 한 묶음에 동시에 읽는 양은 chunkBytes 이하로. 넣은 경로는 added에 기록.
+	 */
+	private async addInBatches(files: { path: string; size: number }[], added: Set<string>) {
+		const limit = this.cfg().chunkBytes;
+		const todo = files.filter((f) => !added.has(f.path));
+		let batch: string[] = [];
+		let bytes = 0;
+		let done = 0;
+		const flush = async () => {
+			if (!batch.length) return;
+			await git.add({ ...this.base, filepath: batch, force: true });
+			for (const p of batch) added.add(p);
+			done += batch.length;
+			this.onProgress(`Git: 볼트에 있는 파일 확인 중 ${done}/${todo.length}개`);
+			batch = [];
+			bytes = 0;
+		};
+		for (const f of todo) {
+			if (batch.length && (batch.length >= ADD_BATCH || bytes + f.size > limit)) await flush();
+			batch.push(f.path);
+			bytes += f.size;
+		}
+		await flush();
+	}
+
+	/** 경로 중 볼트에 파일로 있는 것과 그 크기 */
+	private async localFiles(paths: Iterable<string>, total: number): Promise<Map<string, number>> {
+		const out = new Map<string, number>();
+		let n = 0;
+		for (const p of paths) {
+			const st = await this.fs.lstat(p).catch(() => null);
+			if (st && !st.isDirectory()) out.set(p, st.size);
+			if (++n % 500 === 0) this.onProgress(`Git: 볼트 파일 찾는 중 ${n}/${total}개`);
+		}
+		return out;
+	}
+
+	/** partialFetch reuse: 원격의 큰 파일과 내용이 같은 볼트 파일로 blob을 채운다 (다시 받지 않음) */
+	private async adoptLocal(items: { path: string; oid: string }[], added: Set<string>): Promise<Set<string>> {
+		const local = await this.localFiles(
+			items.map((i) => i.path),
+			items.length,
+		);
+		await this.addInBatches([...local].map(([path, size]) => ({ path, size })), added);
+		const staged = await this.stagedBlobs([...local.keys()]);
+		return new Set(items.filter((i) => staged.get(i.path)?.oid === i.oid).map((i) => i.oid));
+	}
+
+	/** 커밋 트리의 파일 경로 → blob */
+	private async treeBlobs(commit: string): Promise<Map<string, Blob>> {
+		const out = new Map<string, Blob>();
+		await git.walk({
+			...this.base,
+			trees: [git.TREE({ ref: commit })],
+			map: async (path, [e]) => {
+				if (path !== "." && e && (await e.type()) === "blob") out.set(path, { oid: await e.oid(), mode: await e.mode() });
+				return true;
+			},
+		});
+		return out;
+	}
+
+	/** 기준 커밋의 파일 목록 (트리만 받아서). 원격에서 못 받으면 null */
+	private async baseBlobs(base: string): Promise<Map<string, Blob> | null> {
+		if (!(await fetchTreesOnly(this.fetchOptions(), base))) return null;
+		try {
+			return await this.treeBlobs(base);
+		} catch (e) {
+			console.warn("[light-git] 기준 커밋 트리를 읽지 못했습니다", e);
+			return null;
+		}
 	}
 
 	/**
 	 * 로컬 커밋이 없을 때: 원격 브랜치를 가져와 working tree에 반영 (clone과 동일).
-	 * 볼트에 이미 파일이 있으면 덮어쓰지 않는다 — 같은 파일은 그대로 쓰고, 내용이 다른 파일은 '변경됨'으로 남고, 없는 파일만 받아서 쓴다.
+	 * 볼트에 이미 파일이 있으면(기존 볼트) reconcile 규칙으로 하나씩 판정한다. 이 기기에서 고친 내용은 지우지 않는다.
+	 * 도중에 앱이 꺼지면 CLONING 표시가 남아 다음 연결이 이어서 한다.
 	 */
-	private async checkoutRemote(shallow: boolean) {
+	private async checkoutRemote(base: string | null): Promise<string> {
 		const { branch } = this.cfg();
+		await this.fs.writeFile(CLONING, JSON.stringify({ base } satisfies CloneState));
 		try {
+			const added = new Set<string>();
 			const tip =
-				(shallow && (await this.partialFetch((p, oid) => this.adoptLocal(p, oid)))) ||
-				(await git.fetch({ ...this.base, ...this.remote, ref: branch, singleBranch: true, tags: false, depth: shallow ? 1 : undefined })).fetchHead;
-			if (!tip) return;
+				(await this.partialFetch((items) => this.adoptLocal(items, added))) ||
+				(await git.fetch({ ...this.base, ...this.remote, ref: branch, singleBranch: true, tags: false, depth: 1 })).fetchHead;
+			if (!tip) throw new Error(`원격 브랜치 ${branch}를 받지 못했습니다.`);
+			const baseMap = base ? (base === tip ? await this.treeBlobs(tip) : await this.baseBlobs(base)) : null;
 			await git.writeRef({ ...this.base, ref: `refs/heads/${branch}`, value: tip, force: true });
-			this.onProgress("Git: 볼트에 파일 쓰는 중…");
-			const toWrite = await this.indexLocalFiles(tip);
-			if (toWrite === null) await git.checkout({ ...this.base, ref: branch, force: true, ...BATCHED });
-			else if (toWrite.length) await git.checkout({ ...this.base, ref: branch, filepaths: toWrite, force: true, ...BATCHED });
+			const msg = await this.reconcile(tip, baseMap, added, !!base);
+			await this.fs.unlink(CLONING);
+			return msg;
 		} finally {
 			this.onProgress(null);
 		}
 	}
 
 	/**
-	 * 원격 tip의 파일 중 볼트에 이미 있는 것을 index에 넣고(내용이 다르면 원격 내용으로 — 작업 파일은 그대로), 볼트에 없는 경로를 반환한다.
-	 * 볼트에 해당 파일이 하나도 없으면 null (전부 checkout).
+	 * 원격 tip(T)과 볼트 파일(L)을 맞춘다. B = 볼트가 마지막으로 본 원격 상태 (모르면 null).
+	 *  - L == T: 그대로 (다시 받지 않음)
+	 *  - L 없음: 원격 것을 쓴다. 단 B == T면 이 기기에서 지운 것 → '삭제'로 남긴다
+	 *  - 플러그인 목록/플러그인 폴더: 항상 기기 것 (원격 것을 쓰면 이 플러그인이 꺼질 수 있음)
+	 *  - L == B: 이 기기는 안 바꿨고 원격만 바뀜 → 원격 것 (B를 모르면 .obsidian 설정만 이렇게: Obsidian이 만든 기본값)
+	 *  - T == B: 이 기기에서만 바뀜 → 볼트 파일 유지, '변경됨'으로 표시 (다음 동기화 때 올라감)
+	 *  - 그 외(양쪽 다 바뀜, 또는 B를 몰라 어느 쪽이 최신인지 모름): 원격 것을 쓰고 볼트 파일은 '(충돌 사본)'으로 보관
+	 *    → 예전 파일로 원격 최신본을 조용히 덮어쓰는 일이 없다
+	 *  - B에 있고 T에 없음(원격에서 삭제) + L == B: 볼트에서도 삭제
 	 */
-	private async indexLocalFiles(tip: string): Promise<string[] | null> {
-		const entries = (await git.walk({
-			...this.base,
-			trees: [git.TREE({ ref: tip }), git.STAGE()],
-			map: async (path, [t, s]) => {
-				if (!t || (await t.type()) !== "blob") return undefined;
-				return { path, oid: await t.oid(), mode: await t.mode(), staged: s ? await s.oid() : undefined };
-			},
-		})) as { path: string; oid: string; mode: number; staged?: string }[];
-		const missing: string[] = [];
-		let found = false;
-		for (const e of entries) {
-			if (e.staged === e.oid) {
-				found = true; // adoptLocal이 이미 넣음
+	private async reconcile(tip: string, baseMap: Map<string, Blob> | null, added: Set<string>, hadBase: boolean): Promise<string> {
+		const { branch } = this.cfg();
+		const tipMap = await this.treeBlobs(tip);
+		const local = await this.localFiles(tipMap.keys(), tipMap.size);
+		await this.addInBatches([...local].map(([path, size]) => ({ path, size })), added);
+		const staged = await this.stagedBlobs([...local.keys()]);
+
+		const take: string[] = [];
+		const keepIndex: string[] = [];
+		const copies: string[] = [];
+		let fresh = 0;
+		let kept = 0;
+		for (const [path, t] of tipMap) {
+			const l = local.has(path) ? staged.get(path)?.oid : undefined;
+			if (l === t.oid) continue;
+			const b = baseMap?.get(path)?.oid;
+			if (l === undefined) {
+				if (baseMap && b === t.oid) keepIndex.push(path);
+				else take.push(path);
 				continue;
 			}
-			// .obsidian 설정은 Obsidian이 볼트를 열 때 기본값으로 만들어 두므로 원격 것으로 덮어쓴다
-			if (e.path.startsWith(".obsidian/") || !(await this.exists(e.path))) {
-				missing.push(e.path);
+			if (KEEP_LOCAL.some((k) => path === k || path.startsWith(k))) {
+				keepIndex.push(path);
 				continue;
 			}
-			found = true;
-			if (!(await this.adoptLocal(e.path, e.oid))) await git.updateIndex({ ...this.base, filepath: e.path, oid: e.oid, mode: e.mode, add: true, force: true });
+			if (baseMap ? l === b : path.startsWith(".obsidian/")) {
+				take.push(path);
+				fresh++;
+			} else if (baseMap && b === t.oid) {
+				keepIndex.push(path);
+				kept++;
+			} else {
+				copies.push(path);
+				take.push(path);
+			}
 		}
-		return found ? missing : null;
+
+		const removed: string[] = [];
+		if (baseMap) {
+			for (const [path, b] of baseMap) {
+				if (tipMap.has(path) || KEEP_LOCAL.some((k) => path === k || path.startsWith(k))) continue;
+				const data = await this.fs.readFile(path).catch(() => null);
+				if (data instanceof Uint8Array && (await git.hashBlob({ object: data })).oid === b.oid) {
+					await this.fs.unlink(path);
+					removed.push(path);
+				}
+			}
+		}
+
+		const stamp = conflictStamp();
+		for (const path of copies) {
+			const data = await this.fs.readFile(path);
+			await this.fs.writeFile(await this.freePath(conflictCopyPath(path, stamp)), data);
+		}
+		for (const path of keepIndex) {
+			const t = tipMap.get(path)!;
+			await git.updateIndex({ ...this.base, filepath: path, oid: t.oid, mode: t.mode, add: true, force: true });
+		}
+		if (take.length) {
+			this.onProgress(`Git: 볼트에 파일 쓰는 중… (${take.length}개)`);
+			await git.checkout({ ...this.base, ref: branch, filepaths: take, force: true, ...BATCHED });
+		}
+
+		if (!local.size) return "원격 저장소를 받아왔습니다.";
+		const parts = [`원격 저장소를 받아왔습니다. 볼트에 있던 파일 ${local.size}개 확인.`];
+		if (fresh) parts.push(`원격 최신본으로 갱신 ${fresh}개`);
+		if (kept) parts.push(`이 기기에서 바뀐 ${kept}개는 '변경'으로 남김 (동기화하면 올라감)`);
+		if (copies.length) parts.push(`어느 쪽이 최신인지 알 수 없는 ${copies.length}개는 원격 내용으로 쓰고, 볼트에 있던 내용은 '(충돌 사본)' 파일로 보관`);
+		if (removed.length) parts.push(`원격에서 삭제된 ${removed.length}개 삭제`);
+		if (!hadBase && copies.length) parts.push("(이전 Git 기록이 없어 비교 기준을 몰랐습니다)");
+		return parts.join("\n");
 	}
 
-	async changes(): Promise<WorkChange[]> {
-		const matrix = await git.statusMatrix({ ...this.base, cache: {} });
+	/** 이미 있으면 " 2", " 3"…을 붙인 경로 */
+	private async freePath(path: string): Promise<string> {
+		if (!(await this.exists(path))) return path;
+		const dot = path.lastIndexOf(".");
+		const slash = path.lastIndexOf("/");
+		const [stem, ext] = dot > slash + 1 ? [path.slice(0, dot), path.slice(dot)] : [path, ""];
+		for (let i = 2; ; i++) if (!(await this.exists(`${stem} ${i}${ext}`))) return `${stem} ${i}${ext}`;
+	}
+
+	private async doChanges(): Promise<WorkChange[]> {
+		const matrix = await git.statusMatrix({ ...this.base });
 		const out: WorkChange[] = [];
 		// statusMatrix 값: head/workdir 0=없음 1=HEAD와 같음 2=다름, stage 0=없음 1=HEAD와 같음 2=작업 파일과 같음 3=둘 다와 다름
 		for (const [path, head, workdir, stage] of matrix) {
@@ -236,16 +435,16 @@ export class IsoBackend implements GitBackend {
 		return out;
 	}
 
-	async stage(paths: string[]): Promise<void> {
+	private async doStage(paths: string[]): Promise<void> {
 		const adds: string[] = [];
 		for (const p of paths) {
 			if (await this.exists(p)) adds.push(p);
 			else await git.remove({ ...this.base, filepath: p });
 		}
-		if (adds.length) await git.add({ ...this.base, filepath: adds, cache: {} });
+		if (adds.length) await git.add({ ...this.base, filepath: adds });
 	}
 
-	async unstage(paths: string[]): Promise<void> {
+	private async doUnstage(paths: string[]): Promise<void> {
 		const hasHead = !!(await this.headOid());
 		for (const p of paths) {
 			if (hasHead) await git.resetIndex({ ...this.base, filepath: p });
@@ -319,12 +518,12 @@ export class IsoBackend implements GitBackend {
 		}
 	}
 
-	async readAt(rev: string, path: string): Promise<string | null> {
+	private async doReadAt(rev: string, path: string): Promise<string | null> {
 		const blob = await this.readBlobAt(rev, path);
 		return blob ? decoder.decode(blob) : null;
 	}
 
-	async conflictVersions(path: string): Promise<ConflictVersions> {
+	private async doConflictVersions(path: string): Promise<ConflictVersions> {
 		const head = await this.headOid();
 		const theirs = await this.readMergeHead();
 		let base: string | null = null;
@@ -353,7 +552,7 @@ export class IsoBackend implements GitBackend {
 		}
 	}
 
-	async discard(path: string): Promise<void> {
+	private async doDiscard(path: string): Promise<void> {
 		await this.unstage([path]);
 		const blob = await this.readBlobAt("HEAD", path);
 		if (blob) {
@@ -365,7 +564,7 @@ export class IsoBackend implements GitBackend {
 		}
 	}
 
-	async log(limit: number): Promise<CommitInfo[]> {
+	private async doLog(limit: number): Promise<CommitInfo[]> {
 		if (!(await this.headOid())) return [];
 		const entries = await git.log({ ...this.base, ref: "HEAD", depth: limit });
 		return entries.map((e) => ({
@@ -401,7 +600,7 @@ export class IsoBackend implements GitBackend {
 		return out;
 	}
 
-	async commitFiles(oid: string): Promise<FileChange[]> {
+	private async doCommitFiles(oid: string): Promise<FileChange[]> {
 		const { commit } = await git.readCommit({ ...this.base, oid });
 		const parent = commit.parent[0];
 		let files: TreeChange[] | null = null;
@@ -461,7 +660,8 @@ export class IsoBackend implements GitBackend {
 		return out;
 	}
 
-	async commit(message: CommitMessage, stagedOnly = false): Promise<number> {
+	private async doCommit(message: CommitMessage, stagedOnly = false): Promise<number> {
+		if (await this.readCloning()) throw new Error(RESUME_MSG);
 		const mergeHead = await this.readMergeHead();
 		if (mergeHead) {
 			const unresolved = await this.conflicts();
@@ -499,13 +699,14 @@ export class IsoBackend implements GitBackend {
 		return groups.length;
 	}
 
-	async pull(): Promise<string[]> {
+	private async doPull(): Promise<string[]> {
 		const { branch, remoteUrl } = this.cfg();
 		if (!remoteUrl) return [];
+		if (await this.readCloning()) throw new Error(RESUME_MSG);
 		if (await this.readMergeHead()) return this.conflicts();
 		const head = await this.headOid();
 		if (!head) {
-			await this.checkoutRemote(true);
+			await this.checkoutRemote(null);
 			return [];
 		}
 		// isomorphic-git fetch는 로컬 커밋 뒤엔 원격이 공통 지점을 몰라 트리·히스토리 전체를 보낸다 → 앱이 꺼지던 원인
@@ -722,7 +923,7 @@ export class IsoBackend implements GitBackend {
 		return chain;
 	}
 
-	async push(): Promise<void> {
+	private async doPush(): Promise<void> {
 		const { branch, remoteUrl } = this.cfg();
 		if (!remoteUrl) return;
 		const head = await this.headOid();
@@ -764,4 +965,58 @@ export class IsoBackend implements GitBackend {
 		const res = await git.push({ ...this.base, ...this.remote, ref: branch, remoteRef: branch });
 		if (!res.ok) throw new Error(`push 거부됨: ${JSON.stringify(res.refs)}`);
 	}
+
+	// ---------- 공개 메서드: 작업마다 객체 캐시 하나를 공유 (op 참고) ----------
+
+	connect() {
+		return this.op(() => this.doConnect());
+	}
+	changes() {
+		return this.op(() => this.doChanges());
+	}
+	stage(paths: string[]) {
+		return this.op(() => this.doStage(paths));
+	}
+	unstage(paths: string[]) {
+		return this.op(() => this.doUnstage(paths));
+	}
+	commit(message: CommitMessage, stagedOnly = false) {
+		return this.op(() => this.doCommit(message, stagedOnly));
+	}
+	pull() {
+		return this.op(() => this.doPull());
+	}
+	push() {
+		return this.op(() => this.doPush());
+	}
+	readAt(rev: string, path: string) {
+		return this.op(() => this.doReadAt(rev, path));
+	}
+	conflictVersions(path: string) {
+		return this.op(() => this.doConflictVersions(path));
+	}
+	discard(path: string) {
+		return this.op(() => this.doDiscard(path));
+	}
+	log(limit: number) {
+		return this.op(() => this.doLog(limit));
+	}
+	commitFiles(oid: string) {
+		return this.op(() => this.doCommitFiles(oid));
+	}
+}
+
+/** 충돌 사본 이름에 붙일 기기 시각 */
+function conflictStamp(): string {
+	const d = new Date();
+	const p = (n: number) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
+/** notes/a.md → notes/a (충돌 사본 2026-11-04 1530).md */
+export function conflictCopyPath(path: string, stamp: string): string {
+	const slash = path.lastIndexOf("/");
+	const dot = path.lastIndexOf(".");
+	const [stem, ext] = dot > slash + 1 ? [path.slice(0, dot), path.slice(dot)] : [path, ""];
+	return `${stem} (충돌 사본 ${stamp})${ext}`;
 }

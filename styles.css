@@ -640,3 +640,8 @@ body:not(.is-mobile) .mod-right-split .light-git-view > .light-git-list:last-chi
 		gap: 4px;
 	}
 }
+
+/* 확인창 문구의 줄바꿈 유지 */
+.light-git-confirm-text {
+	white-space: pre-wrap;
+}
