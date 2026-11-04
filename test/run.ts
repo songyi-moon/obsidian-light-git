@@ -8,6 +8,7 @@ import { CountingAdapter, MockAdapter } from "./mockAdapter";
 import { startGitServer } from "./gitServer";
 import { ObsidianFs } from "../src/git/obsidianFs";
 import { IsoBackend } from "../src/git/isoBackend";
+import { friendlyError, remoteUrlProblem } from "../src/git/errors";
 import { NativeBackend } from "../src/git/nativeBackend";
 import { conflictCopyOriginal, isNewConflictCopy, type GitBackend, type GitConfig } from "../src/git/types";
 import { runMergeModelTests } from "./mergeModel.test";
@@ -392,6 +393,28 @@ async function main() {
 	await unpushedFlow("iso", A.b, A.root, C, Croot);
 	await unpushedFlow("native", C, Croot, A.b, A.root);
 	await unpushedFlow("shallow", B.b, B.root, C, Croot);
+
+	// 12-3. 오류 안내와 연결 확인
+	const fe = (raw: string) => friendlyError(raw);
+	check("errors: auth goes to settings", fe("git-upload-pack HTTP 401").settings && fe("HTTP Error: 403 Forbidden").settings && fe("fatal: Authentication failed for 'https://x'").message.startsWith("인증"));
+	check("errors: repo not found", fe("remote: Repository not found.").message.startsWith("저장소를 찾을 수") && fe("HTTP Error: 404 Not Found").settings);
+	check("errors: network has no settings button", fe("net::ERR_INTERNET_DISCONNECTED").message.startsWith("네트워크") && !fe("The Internet connection appears to be offline.").settings && fe("fatal: Could not resolve host: github.com").message.startsWith("네트워크"));
+	check("errors: rejected push", fe("! [rejected] main -> main (fetch first)").message.includes("먼저 pull"));
+	const ownMsg = "커밋하지 않은 변경이 원격에서 바뀐 파일과 겹칩니다. 먼저 커밋하거나 되돌리세요: notes/network 401.md";
+	check("errors: own Korean messages and unknown errors stay as they are", fe(ownMsg).message === ownMsg && !fe(ownMsg).settings && fe("something odd").message === "something odd");
+	check("url check", remoteUrlProblem("", false) !== null && remoteUrlProblem("https://github.com/a/b.git", true) === null && remoteUrlProblem("git@github.com:a/b.git", true) !== null && remoteUrlProblem("git@github.com:a/b.git", false) === null && remoteUrlProblem("github.com/a/b", false) !== null && remoteUrlProblem("https://a b", true) !== null);
+	const withBranch = (branch: string, repo = "vault"): (() => GitConfig) => () => ({ ...cfg("check")(), branch, remoteUrl: `${server.url}/${repo}.git` });
+	const checkDir = path.join(tmp, "check");
+	fs.mkdirSync(checkDir);
+	const isoCheck = (c: () => GitConfig) => new IsoBackend(new ObsidianFs(new MockAdapter(checkDir) as any), nodeHttp, c);
+	const nativeCheck = (c: () => GitConfig) => new NativeBackend(checkDir, c);
+	for (const [name, make] of [["iso", isoCheck], ["native", nativeCheck]] as const) {
+		const has = await make(withBranch("main")).checkRemote();
+		const hasNot = await make(withBranch("no-such-branch")).checkRemote();
+		const failure = await make(withBranch("main", "missing")).checkRemote().then(() => "no error", (e) => String(e?.message ?? e));
+		check(`${name} checkRemote: finds branch, reports missing branch, missing repo gets a clear message`, has && !hasNot && fe(failure).message.startsWith("저장소를 찾을 수"), failure.split("\n")[0]);
+	}
+	check("checkRemote leaves the folder untouched", fs.readdirSync(checkDir).length === 0);
 
 	// 13. 저장소 폴더: vault의 하위 폴더에 clone → 기기별 .obsidian은 git에 안 잡힘
 	const vaultD = path.join(tmp, "vaultD");

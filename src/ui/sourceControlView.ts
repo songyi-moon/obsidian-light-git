@@ -147,8 +147,8 @@ export class SourceControlView extends ItemView {
 		this.stagedOnly = staged.length > 0 && !merging;
 		const count = this.stagedOnly ? staged.length : changes.length + conflicts.length;
 		this.messageEl.placeholder = `커밋 메시지 (비우면: ${this.plugin.defaultMessage(count)})`;
-		this.commitBtn.setText(this.stagedOnly ? `${staged.length}개 커밋 & 동기화` : "커밋 & 동기화");
-		this.hintEl.setText(merging ? "머지 커밋" : this.stagedOnly ? `${staged.length}/${changes.length} 선택` : changes.length ? `전체 ${changes.length}개` : "");
+		this.commitBtn.setText(merging && !conflicts.length ? "머지 완료 & 동기화" : this.stagedOnly ? `${staged.length}개 커밋 & 동기화` : "커밋 & 동기화");
+		this.hintEl.setText(conflicts.length ? `충돌 ${conflicts.length}건 남음` : merging ? "머지 커밋" : this.stagedOnly ? `${staged.length}/${changes.length} 선택` : changes.length ? `전체 ${changes.length}개` : "");
 		this.render(merging, conflicts, changes, copies);
 		this.renderStatus();
 	}
@@ -160,7 +160,7 @@ export class SourceControlView extends ItemView {
 		const last = this.plugin.lastRun;
 		const unpushed = this.state?.unpushed ?? 0;
 		this.contentEl.toggleClass("is-busy", !!running);
-		this.commitBtn.disabled = !!running;
+		this.commitBtn.disabled = !!running || !!this.state?.conflicts.length;
 		this.statusEl.empty();
 		this.statusEl.toggleClass("is-empty", !running && !last && !unpushed);
 		if (running) {
@@ -192,6 +192,12 @@ export class SourceControlView extends ItemView {
 		this.listEl.empty();
 		const box = this.listEl.createDiv({ cls: "light-git-empty" });
 		box.createDiv({ text: "아직 Git 저장소가 연결되지 않았습니다." });
+		if (!this.plugin.settings.remoteUrl) {
+			box.createDiv({ text: "설정에서 저장소 URL과 토큰을 입력하세요." });
+			const open = box.createEl("button", { text: "설정 열기", cls: "mod-cta" });
+			open.onclick = () => this.plugin.openSettings();
+			return;
+		}
 		const btn = box.createEl("button", { text: "원격 저장소 연결", cls: "mod-cta" });
 		btn.onclick = () => this.plugin.connect();
 	}

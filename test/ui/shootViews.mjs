@@ -51,6 +51,25 @@ check("commit button / hint show selection", info.btnStaging === "2개 커밋 & 
 check("placeholder counts selected files", info.placeholder.includes("(desktop) 2개"), info.placeholder);
 check("commit box pinned to bottom", info.commitBoxAtBottom);
 check("history", info.commits === 3 && info.historyFiles === 2);
+const mergeUi = await page.evaluate(() => {
+  const btn = (id) => document.querySelector(`#${id} .light-git-commit-btn`);
+  return {
+    conflict: [btn("merging").disabled, document.querySelector("#merging .light-git-commit-hint").textContent],
+    done: [btn("merged").disabled, btn("merged").textContent, document.querySelector("#merged .light-git-commit-hint").textContent],
+  };
+});
+check("merge: blocked while conflicts remain, then offers to finish", JSON.stringify(mergeUi) === JSON.stringify({ conflict: [true, "충돌 1건 남음"], done: [false, "머지 완료 & 동기화", "머지 커밋"] }), JSON.stringify(mergeUi));
+const empty = await page.evaluate(() => {
+  const box = document.querySelector("#notConnected .light-git-empty");
+  const b = box.querySelector("button");
+  const text = b.textContent;
+  window.__calls.length = 0;
+  b.click();
+  const calls = JSON.stringify(window.__calls);
+  window.__calls.length = 0;
+  return { text, calls };
+});
+check("not connected without URL: goes to settings", empty.text === "설정 열기" && empty.calls === '[["openSettings"]]', JSON.stringify(empty));
 await page.screenshot({ path: `${out}/views.png` });
 
 // 체크박스/버튼 동작

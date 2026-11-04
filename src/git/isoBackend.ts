@@ -960,13 +960,13 @@ export class IsoBackend implements GitBackend {
 			await git.writeRef({ ...this.base, ref: `refs/heads/${TMP_REF}`, value: oid, force: true });
 			try {
 				const r = await git.push({ ...this.base, ...this.remote, ref: TMP_REF, remoteRef: branch });
-				if (!r.ok) throw new Error(`push 거부됨: ${JSON.stringify(r.refs)}`);
+				if (!r.ok) throw pushRejected(r);
 			} finally {
 				await git.deleteRef({ ...this.base, ref: `refs/heads/${TMP_REF}` });
 			}
 		}
 		const res = await git.push({ ...this.base, ...this.remote, ref: branch, remoteRef: branch });
-		if (!res.ok) throw new Error(`push 거부됨: ${JSON.stringify(res.refs)}`);
+		if (!res.ok) throw pushRejected(res);
 	}
 
 	/** 뷰를 새로 그릴 때마다 불리므로 ref만 읽고, HEAD나 원격이 바뀌었을 때만 커밋을 따라가 다시 센다 */
@@ -1009,6 +1009,11 @@ export class IsoBackend implements GitBackend {
 	unpushedCount() {
 		return this.op(() => this.doUnpushedCount());
 	}
+	async checkRemote(): Promise<boolean> {
+		const { branch } = this.cfg();
+		const refs = await git.listServerRefs({ ...this.remote, prefix: `refs/heads/${branch}` });
+		return refs.some((r) => r.ref === `refs/heads/${branch}`);
+	}
 	readAt(rev: string, path: string) {
 		return this.op(() => this.doReadAt(rev, path));
 	}
@@ -1024,6 +1029,12 @@ export class IsoBackend implements GitBackend {
 	commitFiles(oid: string) {
 		return this.op(() => this.doCommitFiles(oid));
 	}
+}
+
+function pushRejected(res: git.PushResult): Error {
+	const reasons = Object.values(res.refs ?? {}).map((r) => r.error).filter(Boolean);
+	const detail = reasons.join(", ") || res.error || "";
+	return new Error(`push가 거부되었습니다. 브랜치 보호 규칙과 토큰의 쓰기 권한을 확인하세요.${detail ? ` (${detail})` : ""}`);
 }
 
 /** 충돌 사본 이름에 붙일 기기 시각 */

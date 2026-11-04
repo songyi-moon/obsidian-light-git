@@ -36,6 +36,7 @@ await page.evaluate(() => document.querySelector(".light-git-merge-footer .mod-c
 const saved = await page.evaluate(() => window.__saved["notes/회의록.md"]);
 check("saved merged content", saved?.includes("참석자: 김, 이, 박") && saved.includes("4. 워크숍") && saved.includes("2. 일정 — 11월 초\n2. 일정 (10월 말로 연기)") && saved.includes("금요일 확정, 화요일 재확인"), JSON.stringify(saved?.slice(0, 120)));
 check("modal closed after save", await page.evaluate(() => window.__closed === true));
+check("next conflict step runs after the modal closes", await page.evaluate(() => window.__afterResolution === "after close"), await page.evaluate(() => window.__afterResolution));
 
 // 미해결 상태 저장 시도 → 막힘
 await page.evaluate(() => { window.__closed = false; window.openMerge(); });
@@ -64,7 +65,23 @@ const mcols = await page.$eval(".light-git-merge-row:not(.is-stable)", (e) => ge
 check("mobile: stacked 1 column", mcols === 1);
 const overflow = await page.evaluate(() => document.querySelector(".modal").scrollWidth > window.innerWidth + 1);
 check("mobile: no horizontal overflow", !overflow);
+const labels = await page.evaluate(() => {
+  const b = document.querySelector(".light-git-gutter-btn.is-apply");
+  const i = document.querySelector(".light-git-gutter-btn.is-ignore");
+  return { apply: b.textContent, ignore: i.textContent, label: getComputedStyle(b.querySelector(".light-git-gutter-label")).display, icon: getComputedStyle(b.querySelector("svg")).display, h: b.getBoundingClientRect().height };
+});
+check("mobile: gutter buttons use words, not arrows", labels.label !== "none" && labels.icon === "none" && labels.ignore.endsWith("무시") && labels.h >= 28, JSON.stringify(labels));
+const nextBtn = () => page.evaluate(() => [...document.querySelectorAll(".light-git-merge-toolbar button")].find((b) => b.textContent.includes("다음 미해결")).click());
+const pendingTops = () => page.evaluate(() => {
+  const g = document.querySelector(".light-git-merge-grid");
+  return { scroll: g.scrollTop, offsets: [...g.querySelectorAll(".is-pending")].map((r) => Math.round(r.getBoundingClientRect().top - g.getBoundingClientRect().top)) };
+});
 await page.screenshot({ path: `${out}/merge-mobile.png`, fullPage: false });
+const n0 = await pendingTops();
+await nextBtn();
+const n1 = await pendingTops();
+check("mobile: next pending scrolls a region to the top", n1.scroll > n0.scroll && n1.offsets.some((o) => Math.abs(o) <= 1), JSON.stringify({ n0, n1 }));
+await page.evaluate(() => document.querySelector(".light-git-merge-grid").scrollTop = 0);
 // 태블릿: iPad 세로는 카드, 가로는 3단. 둘 다 가로 스크롤 없어야 함
 for (const [name, w, h, cols] of [["tablet portrait", 820, 1180, 1], ["tablet landscape", 1180, 820, 3]]) {
   await page.setViewport({ width: w, height: h, deviceScaleFactor: 2, isMobile: true });
