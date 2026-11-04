@@ -54,14 +54,36 @@ export class ItemView {
 		this.contentEl.className = "view-content";
 	}
 }
+/** 어떤 메서드를 불러도 자기 자신을 돌려주는 컴포넌트 (설정 화면용) */
+const chain = (props: object) => {
+	const c: any = new Proxy(props, { get: (t: any, k) => (k in t ? t[k] : () => c) });
+	return c;
+};
+export class PluginSettingTab {
+	containerEl = document.createElement("div");
+	constructor(public app: unknown, public plugin: unknown) {}
+}
 export class Setting {
 	constructor(public el: HTMLElement) {}
+	setName() { return this; }
+	setDesc() { return this; }
+	setHeading() { return this; }
+	addText(cb: (t: any) => unknown) {
+		const inputEl = document.createElement("input");
+		inputEl.type = "text";
+		this.el.appendChild(inputEl);
+		cb(chain({ inputEl }));
+		return this;
+	}
+	addToggle(cb: (t: any) => unknown) { cb(chain({})); return this; }
+	addDropdown(cb: (t: any) => unknown) { cb(chain({})); return this; }
 	addButton(cb: (b: any) => unknown) {
 		const el = document.createElement("button");
 		this.el.appendChild(el);
 		const b = {
 			setButtonText(t: string) { el.textContent = t; return b; },
 			setWarning() { return b; },
+			setCta() { return b; },
 			onClick(fn: () => void) { el.onclick = fn; return b; },
 		};
 		cb(b);

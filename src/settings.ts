@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, Setting, type TextComponent } from "obsidian";
 import type LightGitPlugin from "./main";
 
 export type BackendChoice = "auto" | "native" | "isomorphic";
@@ -36,6 +36,14 @@ export const DEFAULT_SETTINGS: LightGitSettings = {
 	chunkMB: 20,
 };
 
+/** URL·폴더·브랜치·계정은 대소문자를 구분하므로 iOS 자동 대문자·자동 수정을 끈다 */
+function exactText<T extends TextComponent>(t: T): T {
+	t.inputEl.setAttribute("autocapitalize", "off");
+	t.inputEl.setAttribute("autocorrect", "off");
+	t.inputEl.spellcheck = false;
+	return t;
+}
+
 export class LightGitSettingTab extends PluginSettingTab {
 	constructor(app: App, private plugin: LightGitPlugin) {
 		super(app, plugin);
@@ -52,22 +60,25 @@ export class LightGitSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("저장소 URL")
 			.setDesc("HTTPS 주소 (예: https://github.com/me/vault.git). 데스크톱 네이티브 git은 SSH 주소도 가능.")
-			.addText((t) => t.setPlaceholder("https://...").setValue(s.remoteUrl).onChange(async (v) => ((s.remoteUrl = v.trim()), await save())));
+			.addText((t) => {
+				t.inputEl.type = "url";
+				exactText(t).setPlaceholder("https://...").setValue(s.remoteUrl).onChange(async (v) => ((s.remoteUrl = v.trim()), await save()));
+			});
 		new Setting(containerEl)
 			.setName("저장소 폴더")
 			.setDesc("vault 안의 이 폴더만 git 저장소로 씁니다 (예: notes). 비우면 vault 전체. 기기마다 다른 .obsidian 설정을 git에서 빼려면 지정하세요. 없으면 만들고, 연결하면 원격을 이 폴더로 받아옵니다.")
 			.addText((t) =>
-				t.setPlaceholder("(vault 전체)").setValue(s.repoFolder).onChange(async (v) => {
+				exactText(t).setPlaceholder("(vault 전체)").setValue(s.repoFolder).onChange(async (v) => {
 					s.repoFolder = v.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 					await save();
 					p.resetBackend();
 				}),
 			);
-		new Setting(containerEl).setName("브랜치").addText((t) => t.setValue(s.branch).onChange(async (v) => ((s.branch = v.trim() || "main"), await save())));
+		new Setting(containerEl).setName("브랜치").addText((t) => exactText(t).setValue(s.branch).onChange(async (v) => ((s.branch = v.trim() || "main"), await save())));
 		new Setting(containerEl)
 			.setName("사용자명")
 			.setDesc("GitHub는 아무 값이나 가능, GitLab/Gitea는 계정명.")
-			.addText((t) => t.setValue(s.username).onChange(async (v) => ((s.username = v.trim()), await save())));
+			.addText((t) => exactText(t).setValue(s.username).onChange(async (v) => ((s.username = v.trim()), await save())));
 		new Setting(containerEl)
 			.setName("토큰 / 비밀번호")
 			.setDesc("Personal Access Token. 이 기기에만 저장되며 vault(=git)에 들어가지 않습니다.")

@@ -159,6 +159,13 @@
 .light-git-group.is-collapsed .light-git-group-body {
 	display: none;
 }
+.light-git-check-wrap {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	cursor: pointer;
+}
 .light-git-check {
 	margin: 0 2px;
 	width: 14px;
@@ -236,6 +243,27 @@ body:not(.is-mobile) .light-git-file:not(:hover) .light-git-file-actions {
 .is-mobile .light-git-file,
 .is-mobile .light-git-group-head {
 	height: 34px;
+}
+/* 터치 영역을 행 높이만큼. 음수 여백은 넓어진 만큼 왼쪽 들여쓰기를 되돌린다 */
+.is-mobile .light-git-check-wrap {
+	width: 34px;
+	height: 34px;
+	margin-left: -10px;
+}
+.is-mobile .light-git-group-head .light-git-check-wrap {
+	margin-left: -4px; /* 접기 화살표를 덮지 않게 */
+}
+.is-mobile .light-git-check {
+	width: 18px;
+	height: 18px;
+}
+.is-mobile .light-git-file-actions {
+	gap: 4px;
+}
+.is-mobile .light-git-file-actions .clickable-icon {
+	width: 34px;
+	height: 34px;
+	padding: 0;
 }
 /* 모바일은 화면이 좁으므로 평소 1줄, 입력 중이거나 내용이 있으면 3줄 */
 .is-mobile .light-git-message {

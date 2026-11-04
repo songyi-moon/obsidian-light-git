@@ -14,7 +14,7 @@ let chosenMode: DiffMode | null = null;
 /** o/n = 이 블록 첫 줄의 이전/이후 줄 번호 */
 type Block =
 	| { kind: "same"; lines: string[]; o: number; n: number }
-	| { kind: "fold"; count: number }
+	| { kind: "fold"; lines: string[]; o: number; n: number }
 	| { kind: "change"; del: string[]; add: string[]; o: number; n: number };
 
 /** 줄 단위 diff를 블록으로. 긴 동일 구간은 앞뒤 CONTEXT줄만 남기고 접는다 */
@@ -36,10 +36,10 @@ function diffBlocks(a: string[], b: string[]): Block[] {
 			const tail = idx === chunks.length - 1 ? 0 : CONTEXT;
 			if (lines.length > head + tail + 1) {
 				same(lines.slice(0, head));
-				const hidden = lines.length - head - tail;
-				out.push({ kind: "fold", count: hidden });
-				o += hidden;
-				n += hidden;
+				const hidden = lines.slice(head, lines.length - tail);
+				out.push({ kind: "fold", lines: hidden, o, n });
+				o += hidden.length;
+				n += hidden.length;
 				same(lines.slice(lines.length - tail));
 			} else {
 				same(lines);
@@ -106,6 +106,16 @@ export class DiffModal extends Modal {
 		else this.renderUnified(body, blocks);
 	}
 
+	/** 접힌 구간. 누르면 그 자리에서 펼친다 (전체를 다시 그리면 스크롤 위치를 잃는다) */
+	private foldRow(body: HTMLElement, blk: Extract<Block, { kind: "fold" }>, draw: (parent: HTMLElement, blocks: Block[]) => void) {
+		const fold = body.createDiv({ cls: "light-git-diff-fold", text: `··· ${blk.lines.length}줄 동일 ···` });
+		fold.onclick = () => {
+			const opened = body.createDiv();
+			fold.replaceWith(opened);
+			draw(opened, [{ ...blk, kind: "same" }]);
+		};
+	}
+
 	private renderUnified(body: HTMLElement, blocks: Block[]) {
 		const line = (cls: string, sign: string, text: string, o: number | "", n: number | "") => {
 			const row = body.createDiv({ cls: `light-git-diff-line ${cls}` });
@@ -115,7 +125,7 @@ export class DiffModal extends Modal {
 			row.createSpan({ cls: "light-git-code", text: text || " " });
 		};
 		for (const blk of blocks) {
-			if (blk.kind === "fold") body.createDiv({ cls: "light-git-diff-fold", text: `··· ${blk.count}줄 동일 ···` });
+			if (blk.kind === "fold") this.foldRow(body, blk, (p, b) => this.renderUnified(p, b));
 			else if (blk.kind === "same") blk.lines.forEach((l, i) => line("ctx", " ", l, blk.o + i, blk.n + i));
 			else {
 				blk.del.forEach((l, i) => line("del", "-", l, blk.o + i, ""));
@@ -132,7 +142,7 @@ export class DiffModal extends Modal {
 		};
 		for (const blk of blocks) {
 			if (blk.kind === "fold") {
-				body.createDiv({ cls: "light-git-diff-fold", text: `··· ${blk.count}줄 동일 ···` });
+				this.foldRow(body, blk, (p, b) => this.renderSide(p, b));
 			} else if (blk.kind === "same") {
 				blk.lines.forEach((l, i) => {
 					const row = body.createDiv({ cls: "light-git-diff-row" });

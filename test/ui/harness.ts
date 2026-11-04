@@ -10,4 +10,5 @@ const host = {
 	afterResolution() { (window as any).__afterResolution = !!document.querySelector(".light-git-merge-modal") ? "before close" : "after close"; },
 };
 (window as any).openMerge = () => new MergeModal({} as any, host, "notes/회의록.md", { base, ours, theirs }).open();
+(window as any).openMergeDeleted = () => new MergeModal({} as any, host, "notes/지운 파일.md", { base: "a\n", ours: null, theirs: "b\n" }).open();
 (window as any).openMerge();

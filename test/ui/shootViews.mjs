@@ -210,6 +210,27 @@ const touchVisible = await page.evaluate(() => getComputedStyle(document.querySe
 const rowH = await page.evaluate(() => document.querySelector("#staging .light-git-file").getBoundingClientRect().height);
 check("touch: row actions always visible, rows ≥ 34px", touchVisible && rowH >= 34, `h=${rowH}`);
 await page.screenshot({ path: `${out}/views-mobile.png`, clip: { x: 0, y: 0, width: 2540, height: 530 } });
+// 체크박스 가장자리를 눌러도 체크되고, diff가 열리거나 그룹이 접히지 않는다
+await page.evaluate(() => { document.querySelector(".modal-container").style.pointerEvents = "none"; }); // 빈 모달 층이 뷰를 덮고 있어 실제 탭이 닿지 않는다
+const tapCorner = async (sel) => {
+  const r = await page.evaluate((s) => { const b = document.querySelector(s).getBoundingClientRect(); return { x: b.left, y: b.top, w: b.width, h: b.height }; }, sel);
+  await page.evaluate(() => { window.__calls.length = 0; });
+  await page.mouse.click(r.x + 2, r.y + 2);
+  return { size: [r.w, r.h], calls: await page.evaluate(() => JSON.stringify(window.__calls)) };
+};
+const rowTap = await tapCorner("#staging .light-git-group-body .light-git-file:nth-child(3) .light-git-check-wrap");
+check("touch: checkbox hit area fills the row, no diff opens", rowTap.size[0] >= 34 && rowTap.size[1] >= 34 && rowTap.calls === '[["stage",["daily/2026-11-03.md"]]]', JSON.stringify(rowTap));
+const headTap = await tapCorner("#staging .light-git-group-head .light-git-check-wrap");
+const stillOpen = await page.evaluate(() => getComputedStyle(document.querySelector("#staging .light-git-group-body")).display !== "none");
+check("touch: head checkbox doesn't collapse the group", stillOpen && headTap.calls.startsWith('[["stage"'), JSON.stringify(headTap));
+const chevronClear = await page.evaluate(() => {
+  const head = document.querySelector("#staging .light-git-group-head");
+  return head.querySelector(".light-git-chevron").getBoundingClientRect().right <= head.querySelector(".light-git-check-wrap").getBoundingClientRect().left;
+});
+check("touch: head checkbox leaves the chevron tappable", chevronClear);
+const actionSize = await page.evaluate(() => [...document.querySelectorAll("#staging .light-git-file-actions .clickable-icon")].slice(0, 2).map((b) => { const r = b.getBoundingClientRect(); return [r.width, r.height, Math.round(r.left)]; }));
+check("touch: row buttons are 34px with a gap", actionSize.every(([w, h]) => w >= 34 && h >= 34) && actionSize[1][2] - actionSize[0][2] >= 38, JSON.stringify(actionSize));
+await page.screenshot({ path: `${out}/views-mobile-touch.png`, clip: { x: 0, y: 0, width: 640, height: 300 } });
 // 커밋 입력칸: 평소 1줄, 입력하면 3줄이고 버튼은 제자리
 const box = () => page.evaluate(() => {
   const m = document.querySelector("#clean .light-git-message");
@@ -255,6 +276,30 @@ const uni = await page.evaluate(() => ({
 }));
 check("diff: toggle to unified", uni.active === "한 줄" && uni.side === 0 && uni.lines === 6, JSON.stringify(uni));
 await page.screenshot({ path: `${out}/diff-unified.png` });
+// 접힌 구간은 눌러서 그 자리에서 펼친다. 줄 번호가 이어지고, 두 보기 모두 같게 동작
+const foldCheck = () => page.evaluate(() => {
+  const fold = document.querySelector(".modal .light-git-diff-fold");
+  const text = fold?.textContent;
+  fold?.click();
+  const nums = [...document.querySelectorAll(".modal .light-git-diff .light-git-ln")].map((n) => Number(n.textContent)).filter(Boolean);
+  return { text, left: document.querySelectorAll(".modal .light-git-diff-fold").length, codes: [...document.querySelectorAll(".modal .light-git-code")].filter((c) => c.textContent === "줄 15").length, max: Math.max(...nums), ordered: [...document.querySelector(".modal .light-git-diff").textContent].length > 0 };
+});
+await page.evaluate(() => document.querySelectorAll(".modal-container > .modal").forEach((m) => m.remove()));
+await page.evaluate(() => window.openLongDiff());
+const foldUnified = await foldCheck();
+check("diff fold opens in unified view", foldUnified.text === "··· 22줄 동일 ···" && foldUnified.left === 0 && foldUnified.codes === 1 && foldUnified.max === 30, JSON.stringify(foldUnified));
+const order = await page.evaluate(() => [...document.querySelectorAll(".modal .light-git-diff-line")].map((l) => l.querySelector(".light-git-code").textContent).slice(4, 9));
+check("diff fold keeps lines in place", JSON.stringify(order) === JSON.stringify(["줄 4", "줄 5", "줄 6", "줄 7", "줄 8"]), JSON.stringify(order));
+await page.evaluate(() => [...document.querySelectorAll(".modal .light-git-diff-modes button")][0].click());
+const foldSide = await foldCheck();
+check("diff fold opens in side view", foldSide.text === "··· 22줄 동일 ···" && foldSide.left === 0 && foldSide.codes === 2 && foldSide.max === 30, JSON.stringify(foldSide));
+
+// 설정: 대소문자가 중요한 칸은 iOS 자동 수정을 끈다
+const inputs = await page.evaluate(() => window.__settingInputs().map((i) => [i.type, i.getAttribute("autocapitalize"), i.getAttribute("autocorrect"), i.spellcheck]));
+const exact = ["text", "off", "off", false];
+check("settings: exact text fields", JSON.stringify(inputs.slice(0, 5)) === JSON.stringify([["url", "off", "off", false], exact, exact, exact, ["password", null, null, inputs[4][3]]]), JSON.stringify(inputs.slice(0, 5)));
+check("settings: other fields keep defaults", inputs.slice(5).every((i) => i[1] === null), JSON.stringify(inputs.slice(5)));
+
 // 좁은 화면(폰)은 한 줄로 시작 — 고른 방식은 기억되므로 새 페이지에서 확인
 await open("", { width: 400, height: 700 });
 await page.evaluate(() => window.openDiff());

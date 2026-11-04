@@ -85,8 +85,19 @@ export class MergeModal extends Modal {
 
 	/** 취소 버튼·Esc·바깥 탭 모두 여기로 온다. 처리한 내용이 있으면 버릴지 먼저 묻는다 */
 	close() {
-		if (!this.regions.some((r) => r.handled.length || r.edited !== null)) return super.close();
+		if (!this.hasWork()) return super.close();
 		new ConfirmModal(this.app, "처리한 내용이 저장되지 않습니다. 닫을까요?", "버리고 닫기", () => super.close()).open();
+	}
+
+	private hasWork() {
+		return this.regions.some((r) => r.handled.length || r.edited !== null);
+	}
+
+	/** 직접 고친 내용까지 지워지고 되돌릴 수 없으므로 처리한 내용이 있으면 먼저 묻는다 */
+	private resetAll() {
+		const run = () => this.mutate(() => this.regions.forEach(reset));
+		if (!this.hasWork()) return run();
+		new ConfirmModal(this.app, "처리한 내용과 직접 고친 내용을 모두 지웁니다. 되돌릴 수 없습니다.", "초기화", run).open();
 	}
 
 	/** 한쪽이 삭제했거나 바이너리인 경우: 파일 단위로 고른다 */
@@ -99,7 +110,10 @@ export class MergeModal extends Modal {
 		const row = box.createDiv({ cls: "light-git-merge-choice-buttons" });
 		const choose = (label: string, content: string | null) => {
 			const btn = row.createEl("button", { text: label });
-			btn.onclick = () => this.save(content);
+			btn.onclick = () => {
+				if (content !== null) return void this.save(content);
+				new ConfirmModal(this.app, `${this.path}\n파일을 삭제해 충돌을 해결합니다.`, "삭제", () => this.save(null)).open();
+			};
 		};
 		choose(ours === null ? "내 것 사용 (삭제)" : "내 것 사용", ours);
 		choose(theirs === null ? "원격 사용 (삭제)" : "원격 사용", theirs);
@@ -120,7 +134,7 @@ export class MergeModal extends Modal {
 		btn("chevrons-right", "모두 내 것", () => this.mutate(() => acceptAll(this.regions, "ours")));
 		btn("chevrons-left", "모두 원격", () => this.mutate(() => acceptAll(this.regions, "theirs")));
 		bar.createDiv({ cls: "light-git-toolbar-sep" });
-		btn("rotate-ccw", "초기화", () => this.mutate(() => this.regions.forEach(reset)));
+		btn("rotate-ccw", "초기화", () => this.resetAll());
 	}
 
 	private renderFooter() {
@@ -266,7 +280,7 @@ export class MergeModal extends Modal {
 	private trySave() {
 		const { conflicts, changes } = unresolvedCount(this.regions);
 		if (conflicts + changes > 0) {
-			new Notice(`아직 처리하지 않은 영역이 있습니다 (충돌 ${conflicts}, 변경 ${changes}). ×로 무시하거나 적용하세요.`);
+			new Notice(`아직 처리하지 않은 영역이 있습니다 (충돌 ${conflicts}, 변경 ${changes}). 적용하거나 무시하세요.`);
 			return;
 		}
 		this.save(mergedText(this.regions));
