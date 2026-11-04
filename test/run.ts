@@ -9,7 +9,7 @@ import { startGitServer } from "./gitServer";
 import { ObsidianFs } from "../src/git/obsidianFs";
 import { IsoBackend } from "../src/git/isoBackend";
 import { NativeBackend } from "../src/git/nativeBackend";
-import type { GitBackend, GitConfig } from "../src/git/types";
+import { conflictCopyOriginal, isNewConflictCopy, type GitBackend, type GitConfig } from "../src/git/types";
 import { runMergeModelTests } from "./mergeModel.test";
 import { acceptAll, apply, buildRegions, mergedText } from "../src/merge/mergeModel";
 
@@ -327,6 +327,72 @@ async function main() {
 	const filesC = await C.commitFiles(sh(Croot, "rev-parse", "HEAD").trim());
 	check("native stagedOnly commits only staged", nC === 1 && filesC.length === 1 && filesC[0].path === "notes/n1.md" && st(await C.changes(), "notes/n2.md")?.unstaged === true, JSON.stringify(filesC));
 
+	// 12-1. 충돌 사본은 커밋에서 빠진다. 스테이징돼 있어도 마찬가지. 이미 커밋된 사본의 삭제는 올라간다
+	check("copy names", isNewConflictCopy({ path: "a/b (충돌 사본 2026-11-04 1530) 2.md", type: "added" }) && !isNewConflictCopy({ path: "a/b (충돌 사본 2026-11-04 1530).md", type: "deleted" }) && !isNewConflictCopy({ path: "a/충돌 사본.md", type: "added" }) && conflictCopyOriginal("a/b.c (충돌 사본 2026-11-04 1530) 2.md") === "a/b.c.md" && conflictCopyOriginal("a/b (충돌 사본 2026-11-04 1530)") === "a/b");
+	const copyN = "notes/n3 (충돌 사본 2026-11-04 1530).md";
+	await C.commit("n2");
+	write(Croot, copyN, "copy\n");
+	const nCopyOnly = await C.commit("only copy");
+	check("native copy: nothing else to commit → no commit", nCopyOnly === 0 && (await C.changes()).some((c) => c.path === copyN && c.type === "added"));
+	await C.stage([copyN]);
+	write(Croot, "notes/n4.md", "n4\n");
+	await C.commit("with copy");
+	const treeC = sh(Croot, "ls-tree", "-r", "--name-only", "-z", "HEAD");
+	check("native copy: never committed, even when staged", !treeC.includes("충돌 사본") && treeC.includes("notes/n4.md") && st(await C.changes(), copyN)?.staged === false, JSON.stringify(await C.changes()));
+	sh(Croot, "add", "-f", "--", copyN);
+	sh(Croot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "old copy");
+	fs.unlinkSync(path.join(Croot, copyN));
+	const delCopy = await C.commit("remove old copy");
+	check("native copy: deleting an already-committed copy is committed", delCopy === 1 && !sh(Croot, "ls-tree", "-r", "--name-only", "-z", "HEAD").includes("충돌 사본"));
+	await C.pull();
+	await C.push();
+
+	await A.b.pull();
+	const copyA = "notes/a3 (충돌 사본 2026-11-04 1530).md";
+	write(A.root, copyA, "copy\n");
+	write(A.root, "notes/a3.md", "a3\n");
+	await A.b.stage([copyA, "notes/a3.md"]);
+	const nA = await A.b.commit("staged with copy", true);
+	const treeA = sh(A.root, "ls-tree", "-r", "--name-only", "-z", "HEAD");
+	check("iso copy: never committed, even when staged", nA === 1 && !treeA.includes("충돌 사본") && treeA.includes("notes/a3.md") && st(await A.b.changes(), copyA)?.staged === false, JSON.stringify(await A.b.changes()));
+	await A.b.discard(copyA);
+	check("iso copy: discard deletes the copy", !fs.existsSync(path.join(A.root, copyA)));
+	await A.b.push();
+
+	// 12-2. 올리지 않은 커밋 수
+	const unpushedFlow = async (name: string, me: GitBackend, root: string, other: GitBackend, otherRoot: string) => {
+		await other.pull();
+		await me.pull();
+		await me.push();
+		check(`${name} unpushed: 0 when synced`, (await me.unpushedCount()) === 0);
+		for (const i of [1, 2]) {
+			write(root, `notes/${name}-u${i}.md`, "u\n");
+			await me.stage([`notes/${name}-u${i}.md`]);
+			await me.commit(`u${i}`, true);
+		}
+		check(`${name} unpushed: counts local commits`, (await me.unpushedCount()) === 2);
+		await me.push();
+		check(`${name} unpushed: 0 after push`, (await me.unpushedCount()) === 0);
+		// 갈라진 뒤 머지: 내 커밋 + 머지 커밋
+		await other.pull();
+		write(root, `notes/${name}-mine.md`, "m\n");
+		await me.stage([`notes/${name}-mine.md`]);
+		await me.commit("mine", true);
+		write(otherRoot, `notes/${name}-theirs.md`, "t\n");
+		await other.stage([`notes/${name}-theirs.md`]);
+		await other.commit("theirs", true);
+		await other.push();
+		check(`${name} unpushed: remote change alone doesn't count`, (await me.unpushedCount()) === 1);
+		check(`${name} unpushed: merge has no conflicts`, (await me.pull()).length === 0);
+		const merged = await me.unpushedCount();
+		check(`${name} unpushed: own commit + merge`, merged === 2, `count=${merged}`);
+		await me.push();
+		check(`${name} unpushed: 0 after merged push`, (await me.unpushedCount()) === 0);
+	};
+	await unpushedFlow("iso", A.b, A.root, C, Croot);
+	await unpushedFlow("native", C, Croot, A.b, A.root);
+	await unpushedFlow("shallow", B.b, B.root, C, Croot);
+
 	// 13. 저장소 폴더: vault의 하위 폴더에 clone → 기기별 .obsidian은 git에 안 잡힘
 	const vaultD = path.join(tmp, "vaultD");
 	write(vaultD, ".obsidian/workspace.json", '{"device":"D"}');
@@ -404,6 +470,7 @@ async function main() {
 		JSON.stringify(ogChanges),
 	);
 	await sync(og.b, "phone first sync");
+	check("conflict copy: not pushed, stays on device and in changes", !sh(bare, "ls-tree", "-r", "--name-only", "-z", "main").includes("충돌 사본") && read(og.root, `notes/${ogCopy}`) === "phone edit\n" && (await og.b.changes()).some((c) => c.path === `notes/${ogCopy}`));
 	await A.b.pull();
 	check("obsidian-git vault: phone sync doesn't revert PC changes", read(A.root, "notes/hello.md") === "pc edit\n" && read(A.root, "notes/unrelated.md") === "pc newer\n" && read(A.root, "notes/c.md") === "phone committed\n");
 

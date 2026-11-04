@@ -1,5 +1,6 @@
 import { App, Modal, Notice, setIcon } from "obsidian";
 import type { ConflictVersions } from "../git/types";
+import { ConfirmModal } from "../ui/confirmModal";
 import { isBinary } from "../ui/diffModal";
 import {
 	acceptAll,
@@ -78,6 +79,12 @@ export class MergeModal extends Modal {
 
 	onClose() {
 		this.contentEl.empty();
+	}
+
+	/** 취소 버튼·Esc·바깥 탭 모두 여기로 온다. 처리한 내용이 있으면 버릴지 먼저 묻는다 */
+	close() {
+		if (!this.regions.some((r) => r.handled.length || r.edited !== null)) return super.close();
+		new ConfirmModal(this.app, "처리한 내용이 저장되지 않습니다. 닫을까요?", "버리고 닫기", () => super.close()).open();
 	}
 
 	/** 한쪽이 삭제했거나 바이너리인 경우: 파일 단위로 고른다 */
@@ -253,7 +260,7 @@ export class MergeModal extends Modal {
 	private async save(content: string | null) {
 		try {
 			await this.host.saveResolution(this.path, content);
-			this.close();
+			super.close();
 		} catch (e) {
 			new Notice(`저장 실패: ${e instanceof Error ? e.message : String(e)}`);
 		}

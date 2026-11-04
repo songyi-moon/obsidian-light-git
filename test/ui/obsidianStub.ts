@@ -56,6 +56,16 @@ export class ItemView {
 }
 export class Setting {
 	constructor(public el: HTMLElement) {}
-	addButton() { return this; }
+	addButton(cb: (b: any) => unknown) {
+		const el = document.createElement("button");
+		this.el.appendChild(el);
+		const b = {
+			setButtonText(t: string) { el.textContent = t; return b; },
+			setWarning() { return b; },
+			onClick(fn: () => void) { el.onclick = fn; return b; },
+		};
+		cb(b);
+		return this;
+	}
 }
 export type WorkspaceLeaf = unknown;

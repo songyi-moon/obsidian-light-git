@@ -5,7 +5,7 @@ import { IsoBackend } from "./git/isoBackend";
 import { NativeBackend } from "./git/nativeBackend";
 import { ObsidianFs } from "./git/obsidianFs";
 import { obsidianHttp } from "./git/obsidianHttp";
-import type { CommitInfo, GitBackend, GitConfig, WorkChange } from "./git/types";
+import { conflictCopyOriginal, isNewConflictCopy, type CommitInfo, type GitBackend, type GitConfig, type WorkChange } from "./git/types";
 import { MergeModal, type MergeHost } from "./merge/mergeModal";
 import { DEFAULT_SETTINGS, LightGitSettingTab, type LightGitSettings } from "./settings";
 import { ConfirmModal } from "./ui/confirmModal";
@@ -36,6 +36,10 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 	settings!: LightGitSettings;
 	private backend: GitBackend | null = null;
 	private busy = false;
+	/** 진행 중인 작업 이름 */
+	private running: string | null = null;
+	/** 뷰 상단에 보여 줄 마지막 작업 결과 (알림이 사라진 뒤에도 알 수 있게) */
+	lastRun: { text: string; failed: boolean } | null = null;
 	/** 충돌 안내는 자동으로 닫히지 않으므로, 충돌을 다 해결하면 직접 닫는다 */
 	private conflictNotice: Notice | null = null;
 	private staging: Promise<void> = Promise.resolve();
@@ -148,6 +152,10 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 		return this.busy;
 	}
 
+	runningLabel(): string | null {
+		return this.running;
+	}
+
 	async getBackend(): Promise<GitBackend> {
 		if (this.backend) return this.backend;
 		const adapter = this.app.vault.adapter;
@@ -206,7 +214,9 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 			return false;
 		}
 		this.busy = true;
+		this.running = label;
 		this.setStatus(`Git: ${label}…`);
+		this.renderViewStatus();
 		let ok = false;
 		try {
 			const result = await fn(await this.getBackend());
@@ -214,17 +224,27 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 				this.conflictNotice?.hide();
 				this.conflictNotice = new Notice(result, 0);
 			} else if (result) new Notice(result, 4000);
-			this.setStatus(`Git: ${now(false)} ${label} 완료`);
+			this.lastRun = { text: `${now(false)} ${label} 완료`, failed: false };
+			this.setStatus(`Git: ${this.lastRun.text}`);
 			ok = true;
 		} catch (e) {
 			console.error("[light-git]", e);
 			new Notice(`Git ${label} 실패: ${errorText(e)}`, 10000);
+			this.lastRun = { text: `${now(false)} ${label} 실패`, failed: true };
 			this.setStatus(`Git: ${label} 실패`);
 		} finally {
 			this.busy = false;
+			this.running = null;
 		}
+		this.renderViewStatus();
 		this.refreshViews();
 		return ok;
+	}
+
+	private renderViewStatus() {
+		for (const leaf of this.app.workspace.getLeavesOfType(SOURCE_CONTROL_VIEW)) {
+			if (leaf.view instanceof SourceControlView) leaf.view.renderStatus();
+		}
 	}
 
 	private pluginManager(): PluginManager | null {
@@ -275,7 +295,7 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 		let changes: WorkChange[] = [];
 		try {
 			const b = await this.getBackend();
-			if (await b.isRepo()) changes = await b.changes();
+			if (await b.isRepo()) changes = (await b.changes()).filter((c) => !isNewConflictCopy(c));
 		} catch (e) {
 			console.error("[light-git]", e);
 		}
@@ -381,6 +401,17 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 			const vp = this.vaultPath(path);
 			const after = (await adapter.exists(vp)) ? await adapter.read(vp) : null;
 			new DiffModal(this.app, `${path} (마지막 커밋 → 현재)`, before, after).open();
+		} catch (e) {
+			new Notice(`diff 실패: ${errorText(e)}`);
+		}
+	}
+
+	async openCopyDiff(copy: string) {
+		try {
+			const adapter = this.app.vault.adapter;
+			const read = async (p: string) => ((await adapter.exists(this.vaultPath(p))) ? await adapter.read(this.vaultPath(p)) : null);
+			const original = conflictCopyOriginal(copy);
+			new DiffModal(this.app, `${original} (현재 → 충돌 사본)`, await read(original), await read(copy)).open();
 		} catch (e) {
 			new Notice(`diff 실패: ${errorText(e)}`);
 		}

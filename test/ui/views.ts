@@ -21,6 +21,7 @@ const merging = {
 		{ path: "inbox/아이디어 정리하기 아주 긴 파일 이름 테스트.md", type: "modified", staged: false, unstaged: true },
 		{ path: "old.md", type: "deleted", staged: false, unstaged: true },
 	],
+	unpushedCount: async () => 0,
 	log,
 	commitFiles,
 };
@@ -35,18 +36,37 @@ const staging = {
 		{ path: "daily/2026-11-03.md", type: "added", staged: false, unstaged: true },
 		{ path: "old.md", type: "deleted", staged: false, unstaged: true },
 	],
+	unpushedCount: async () => 0,
+	log,
+	commitFiles,
+};
+// 패널 4: 충돌 사본이 있는 볼트
+const copyPath = "notes/회의록 (충돌 사본 2026-11-04 1530).md";
+const withCopy = {
+	isRepo: async () => true,
+	isMerging: async () => false,
+	conflicts: async () => [],
+	changes: async () => [
+		{ path: "notes/a.md", type: "modified", staged: false, unstaged: true },
+		{ path: copyPath, type: "added", staged: false, unstaged: true },
+	],
+	unpushedCount: async () => 2,
 	log,
 	commitFiles,
 };
 const plugin = (backend: unknown): any => ({
 	isBusy: () => false,
+	runningLabel: () => (window as any).__running ?? null,
+	lastRun: null,
 	getBackend: async () => backend,
 	defaultMessage: (n: number) => `vault backup: 2026-11-02 16:30 (desktop) ${n}개`,
 	sync: async (...args: unknown[]) => ((window as any).__calls.push(["sync", ...args]), true),
 	stage: (p: string[]) => (window as any).__calls.push(["stage", p]),
 	unstage: (p: string[]) => (window as any).__calls.push(["unstage", p]),
 	stagingDone: async () => {},
-	pullCommand() {}, pushCommand() {}, activateHistory() {}, connect() {}, openMerge() {}, openChangeDiff() {}, openFile() {}, discard() {}, openCommitDiff() {},
+	openCopyDiff: (p: string) => (window as any).__calls.push(["openCopyDiff", p]),
+	discard: (p: string) => (window as any).__calls.push(["discard", p]),
+	pullCommand() {}, pushCommand() {}, activateHistory() {}, connect() {}, openMerge() {}, openChangeDiff() {}, openFile() {}, openCommitDiff() {},
 });
 const wrap = document.createElement("div");
 wrap.style.cssText = "display:flex;gap:16px;align-items:flex-start";
@@ -55,6 +75,7 @@ const panes: [any, unknown, string][] = [
 	[SourceControlView, merging, "merging"],
 	[SourceControlView, staging, "staging"],
 	[HistoryView, merging, "history"],
+	[SourceControlView, withCopy, "copies"],
 ];
 for (const [V, backend, id] of panes) {
 	const v = new V({ getViewState: () => ({}), togglePinned() {}, on: () => ({}) }, plugin(backend));
@@ -63,6 +84,7 @@ for (const [V, backend, id] of panes) {
 	pane.style.cssText = "width:300px;height:520px;background:var(--background-primary);border-radius:8px;overflow:hidden";
 	pane.appendChild(v.contentEl);
 	wrap.appendChild(pane);
+	((window as any).__views ??= {})[id] = v;
 	(window as any).__ready = ((window as any).__ready ?? Promise.resolve()).then(() => v.onOpen());
 }
 

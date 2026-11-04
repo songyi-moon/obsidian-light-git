@@ -1,7 +1,7 @@
 import * as git from "isomorphic-git";
 import { fetchTreesOnly, partialFetch, type PartialFetchOptions } from "./partialFetch";
 import { applyNonConflicting, buildRegions, conflictMarkerText, mergedText } from "../merge/mergeModel";
-import { messageText, type CommitInfo, type CommitMessage, type ConflictVersions, type FileChange, type GitBackend, type GitConfig, type WorkChange } from "./types";
+import { isNewConflictCopy, messageText, type CommitInfo, type CommitMessage, type ConflictVersions, type FileChange, type GitBackend, type GitConfig, type WorkChange } from "./types";
 
 /** 분할 push 때 커밋 하나를 가리키는 로컬 전용 임시 ref (원격에는 생기지 않음) */
 const TMP_REF = "light-git-push-step";
@@ -92,6 +92,7 @@ export class IsoBackend implements GitBackend {
 	 */
 	private cache: object | null = null;
 	private depth = 0;
+	private unpushedCache: { head: string; tip: string | null; count: number } | null = null;
 
 	private async op<T>(fn: () => Promise<T>): Promise<T> {
 		if (this.depth++ === 0) this.cache = {};
@@ -667,7 +668,9 @@ export class IsoBackend implements GitBackend {
 			const unresolved = await this.conflicts();
 			if (unresolved.length) throw new Error(`해결되지 않은 충돌 ${unresolved.length}건이 있습니다.`);
 			const head = await this.headOid();
-			const pending = await this.changes();
+			const all = await this.changes();
+			const pending = all.filter((c) => !isNewConflictCopy(c));
+			await this.unstage(all.filter((c) => c.staged && isNewConflictCopy(c)).map((c) => c.path));
 			await this.stage(pending.map((c) => c.path));
 			await git.commit({ ...this.base, message: messageText(message, pending.length), author: this.author, parent: [head!, mergeHead] });
 			await this.clearMergeState();
@@ -675,7 +678,7 @@ export class IsoBackend implements GitBackend {
 		}
 
 		const all = await this.changes();
-		const changes = stagedOnly ? all.filter((c) => c.staged) : all;
+		const changes = all.filter((c) => !isNewConflictCopy(c) && (!stagedOnly || c.staged));
 		if (!changes.length) return 0;
 		const text = messageText(message, changes.length);
 		// 묶음마다 index를 HEAD + 그 묶음만 담은 상태로 만들어 커밋한다.
@@ -966,6 +969,20 @@ export class IsoBackend implements GitBackend {
 		if (!res.ok) throw new Error(`push 거부됨: ${JSON.stringify(res.refs)}`);
 	}
 
+	/** 뷰를 새로 그릴 때마다 불리므로 ref만 읽고, HEAD나 원격이 바뀌었을 때만 커밋을 따라가 다시 센다 */
+	private async doUnpushedCount(): Promise<number> {
+		const { branch, remoteUrl } = this.cfg();
+		const head = await this.headOid();
+		if (!remoteUrl || !head) return 0;
+		const tip = await git.resolveRef({ ...this.base, ref: `refs/remotes/origin/${branch}` }).catch(() => null);
+		if (tip === head) return 0;
+		const c = this.unpushedCache;
+		if (c?.head === head && c.tip === tip) return c.count;
+		const count = (await this.unpushedChain(head, tip)).length;
+		this.unpushedCache = { head, tip, count };
+		return count;
+	}
+
 	// ---------- 공개 메서드: 작업마다 객체 캐시 하나를 공유 (op 참고) ----------
 
 	connect() {
@@ -988,6 +1005,9 @@ export class IsoBackend implements GitBackend {
 	}
 	push() {
 		return this.op(() => this.doPush());
+	}
+	unpushedCount() {
+		return this.op(() => this.doUnpushedCount());
 	}
 	readAt(rev: string, path: string) {
 		return this.op(() => this.doReadAt(rev, path));
