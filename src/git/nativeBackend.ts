@@ -153,7 +153,7 @@ export class NativeBackend implements GitBackend {
 			.filter(Boolean)
 			.map((r) => {
 				const [oid, parents, author, at, message] = r.split("\x1f");
-				return { oid, parent: parents.split(" ")[0] || undefined, author, timestamp: Number(at), message: (message ?? "").trim() };
+				return { oid, parent: parents.split(" ")[0] || undefined, parents: parents.split(" ").filter(Boolean), author, timestamp: Number(at), message: (message ?? "").trim() };
 			});
 	}
 

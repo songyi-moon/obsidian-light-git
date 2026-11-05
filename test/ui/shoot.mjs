@@ -121,6 +121,19 @@ await nextBtn();
 const n1 = await pendingTops();
 check("mobile: next pending scrolls a region to the top", n1.scroll > n0.scroll && n1.offsets.some((o) => Math.abs(o) <= 1), JSON.stringify({ n0, n1 }));
 await page.evaluate(() => document.querySelector(".light-git-merge-grid").scrollTop = 0);
+// F7 / Shift+F7: 다음·이전 미해결
+await page.keyboard.press("F7");
+const k1 = await pendingTops();
+check("keys: F7 goes to the next pending region", k1.scroll === n1.scroll, JSON.stringify(k1));
+await page.keyboard.press("F7");
+const k2 = await pendingTops();
+await page.keyboard.down("Shift");
+await page.keyboard.press("F7");
+await page.keyboard.up("Shift");
+const k3 = await pendingTops();
+check("keys: Shift+F7 goes back", k2.scroll > k1.scroll && k3.scroll === k1.scroll, JSON.stringify([k1.scroll, k2.scroll, k3.scroll]));
+check("toolbar: previous and next buttons", await page.evaluate(() => { const t = [...document.querySelectorAll(".light-git-merge-toolbar button")].map((b) => b.getAttribute("aria-label")); return t.includes("이전 미해결 (Shift+F7)") && t.includes("다음 미해결 (F7)"); }));
+await page.evaluate(() => document.querySelector(".light-git-merge-grid").scrollTop = 0);
 // 태블릿: iPad 세로는 카드, 가로는 3단. 둘 다 가로 스크롤 없어야 함
 for (const [name, w, h, cols] of [["tablet portrait", 820, 1180, 1], ["tablet landscape", 1180, 820, 3]]) {
   await page.setViewport({ width: w, height: h, deviceScaleFactor: 2, isMobile: true });

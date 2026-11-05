@@ -25,6 +25,13 @@ P.setText = function (t: string) { this.textContent = t; };
 P.hide = function () { this.style.display = "none"; };
 P.show = function () { this.style.display = ""; };
 P.isShown = function () { return this.style.display !== "none"; };
+P.createSvg = (Element.prototype as any).createSvg = function (tag: string, o?: { cls?: string; attr?: Record<string, string> }) {
+	const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+	if (o?.cls) el.setAttribute("class", o.cls);
+	for (const [k, v] of Object.entries(o?.attr ?? {})) el.setAttribute(k, v);
+	this.appendChild(el);
+	return el;
+};
 
 const ICONS: Record<string, string> = { "chevrons-right": "»", "chevrons-left": "«", x: "✕", "rotate-ccw": "↺" };
 export function setIcon(el: HTMLElement, name: string) {
@@ -33,8 +40,26 @@ export function setIcon(el: HTMLElement, name: string) {
 	else el.textContent = ICONS[name] ?? name;
 }
 export class Notice { constructor(msg: string) { console.log("NOTICE:", msg); (window as any).__notices.push(msg); } }
+/** Obsidian의 Scope처럼 맨 위 모달만 키를 받는다 */
+const scopes: { mods: string[]; key: string; run: () => unknown }[][] = [];
+document.addEventListener("keydown", (e) => {
+	const mods = [["Shift", e.shiftKey], ["Alt", e.altKey], ["Ctrl", e.ctrlKey]].filter(([, on]) => on).map(([m]) => m);
+	const hit = scopes[scopes.length - 1]?.find((s) => s.key === e.key && s.mods.join() === mods.join());
+	if (hit && hit.run() === false) e.preventDefault();
+});
+export class Menu {
+	items: string[] = [];
+	addItem(cb: (i: any) => unknown) {
+		const item: any = { setTitle: (t: string) => (this.items.push(t), item), setIcon: () => item, onClick: () => item };
+		cb(item);
+		return this;
+	}
+	showAtMouseEvent() { (window as any).__menu = this.items; return this; }
+}
 export class Modal {
 	modalEl: HTMLElement; contentEl: HTMLElement; titleEl: HTMLElement;
+	private keys: { mods: string[]; key: string; run: () => unknown }[] = [];
+	scope = { register: (mods: string[], key: string, run: () => unknown) => void this.keys.push({ mods, key, run }) };
 	constructor(public app: unknown) {
 		this.modalEl = document.createElement("div");
 		this.modalEl.className = "modal";
@@ -42,13 +67,14 @@ export class Modal {
 		this.contentEl = (this.modalEl as any).createDiv({ cls: "modal-content" });
 	}
 	setTitle(t: string) { this.titleEl.textContent = t; return this; }
-	open() { document.body.querySelector(".modal-container")!.appendChild(this.modalEl); (this as any).onOpen(); }
-	close() { (this as any).onClose?.(); this.modalEl.remove(); (window as any).__closed = true; }
+	open() { document.body.querySelector(".modal-container")!.appendChild(this.modalEl); scopes.push(this.keys); (this as any).onOpen(); }
+	close() { (this as any).onClose?.(); this.modalEl.remove(); scopes.splice(scopes.indexOf(this.keys), 1); (window as any).__closed = true; }
 }
 export class ItemView {
 	contentEl: HTMLElement;
 	app: any = { workspace: { on: () => ({}) } };
 	registerEvent() {}
+	registerDomEvent(el: EventTarget, type: string, fn: EventListener) { el.addEventListener(type, fn); }
 	constructor(public leaf: unknown) {
 		this.contentEl = document.createElement("div");
 		this.contentEl.className = "view-content";
