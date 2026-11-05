@@ -1,6 +1,7 @@
-import { ItemView, Notice, setIcon, type WorkspaceLeaf } from "obsidian";
+import { ItemView, Menu, Notice, setIcon, type WorkspaceLeaf } from "obsidian";
 import { isNewConflictCopy, type WorkChange } from "../git/types";
 import type LightGitPlugin from "../main";
+import { asButton, revealInList } from "./asButton";
 import { ConfirmModal } from "./confirmModal";
 import { addPinButton } from "./pinButton";
 
@@ -32,6 +33,12 @@ export class SourceControlView extends ItemView {
 	/** 체크(스테이징)된 파일이 있으면 그것만 커밋 */
 	private stagedOnly = false;
 	private collapsed = new Set<string>();
+	private commitOnlyBtn!: HTMLButtonElement;
+	/** 키보드로 고른 행 (다시 그려도 유지) */
+	private selected: string | null = null;
+	/** 폴더별 묶기. 고르기 전에는 파일이 많을 때만 묶는다 */
+	private groupByDir: boolean | null = null;
+	private groupBtn!: HTMLElement;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -59,24 +66,38 @@ export class SourceControlView extends ItemView {
 
 		const bar = root.createDiv({ cls: "light-git-toolbar" });
 		bar.createDiv({ cls: "light-git-toolbar-title", text: "변경 사항" });
+		const branch = bar.createDiv({ cls: "light-git-branch", attr: { "aria-label": "현재 브랜치" } });
+		setIcon(branch.createSpan({ cls: "light-git-branch-icon" }), "git-branch");
+		branch.createSpan({ text: this.plugin.settings.branch || "main" });
 		const tool = (icon: string, label: string, onClick: () => void, cls = "light-git-busy-off") => {
 			const b = bar.createDiv({ cls: `clickable-icon light-git-icon ${cls}`, attr: { "aria-label": label } });
 			setIcon(b, icon);
-			b.onclick = onClick;
+			asButton(b, onClick);
+			return b;
 		};
 		tool("refresh-cw", "새로고침", () => this.refresh());
 		tool("arrow-down-to-line", "Pull", () => this.plugin.pullCommand());
 		tool("arrow-up-from-line", "Push", () => this.plugin.pushCommand());
 		tool("history", "History", () => this.plugin.activateHistory(), "");
+		this.groupBtn = tool(
+			"folder-tree",
+			"폴더별로 묶기",
+			() => {
+				this.groupByDir = !this.isGrouped();
+				this.show();
+			},
+			"",
+		);
 		addPinButton(this, bar);
 
 		this.statusEl = root.createDiv({ cls: "light-git-status" });
-		this.filterEl = root.createEl("input", { type: "search", cls: "light-git-filter is-hidden", attr: { placeholder: "변경 파일 검색" } });
+		this.filterEl = root.createEl("input", { type: "search", cls: "light-git-filter is-hidden", attr: { placeholder: "변경 파일 검색", "aria-label": "변경 파일 검색" } });
 		this.filterEl.addEventListener("input", () => this.show());
-		this.listEl = root.createDiv({ cls: "light-git-list" });
+		this.listEl = root.createDiv({ cls: "light-git-list", attr: { tabindex: "0", role: "tree", "aria-label": "변경 파일" } });
+		this.registerDomEvent(this.listEl, "keydown", (e) => this.onKey(e));
 
 		const commitBox = root.createDiv({ cls: "light-git-commit-box" });
-		this.messageEl = commitBox.createEl("textarea", { cls: "light-git-message", attr: { rows: "3", spellcheck: "false", placeholder: "커밋 메시지" } });
+		this.messageEl = commitBox.createEl("textarea", { cls: "light-git-message", attr: { rows: "3", spellcheck: "false", placeholder: "커밋 메시지", "aria-label": "커밋 메시지" } });
 		this.messageEl.addEventListener("keydown", (e) => {
 			// Ctrl/Cmd+Enter로 커밋 (한글 조합 중 Enter는 무시)
 			if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
@@ -86,7 +107,9 @@ export class SourceControlView extends ItemView {
 		});
 		const actions = commitBox.createDiv({ cls: "light-git-commit-actions" });
 		this.hintEl = actions.createDiv({ cls: "light-git-commit-hint" });
-		this.commitBtn = actions.createEl("button", { cls: "mod-cta light-git-commit-btn", text: "커밋 & 동기화" });
+		this.commitOnlyBtn = actions.createEl("button", { cls: "light-git-commit-only", text: "커밋", attr: { "aria-label": "커밋만 하고 올리지 않음" } });
+		this.commitOnlyBtn.onclick = () => this.commitOnly();
+		this.commitBtn = actions.createEl("button", { cls: "mod-cta light-git-commit-btn", text: "커밋 & 동기화", attr: { "aria-label": "커밋 & 동기화 (Ctrl+Enter)" } });
 		this.commitBtn.onclick = () => this.commit();
 
 		// 숨겨진 동안 미룬 갱신은 다시 보일 때 한다
@@ -102,6 +125,63 @@ export class SourceControlView extends ItemView {
 		const msg = this.messageEl.value.trim();
 		const ok = await this.plugin.sync(msg || undefined, false, this.stagedOnly);
 		if (ok) this.messageEl.value = "";
+	}
+
+	private async commitOnly() {
+		const msg = this.messageEl.value.trim();
+		const ok = await this.plugin.commitOnly(msg || undefined, this.stagedOnly);
+		if (ok) this.messageEl.value = "";
+	}
+
+	private isGrouped() {
+		return this.groupByDir ?? (this.state?.changes.length ?? 0) >= MANY_FILES;
+	}
+
+	/** 지금 보이는 행 (접힌 그룹 안은 제외) */
+	private keyRows(): HTMLElement[] {
+		return Array.from(this.listEl.querySelectorAll<HTMLElement>(".light-git-group-head, .light-git-file")).filter((r) => r.offsetParent !== null);
+	}
+
+	private select(row: HTMLElement) {
+		this.selected = row.dataset.key ?? null;
+		this.markSelected();
+		revealInList(this.listEl, row);
+	}
+
+	private markSelected() {
+		for (const r of Array.from(this.listEl.querySelectorAll<HTMLElement>("[data-key]"))) {
+			const on = r.dataset.key === this.selected;
+			r.toggleClass("is-selected", on);
+			r.setAttribute("aria-selected", String(on));
+		}
+	}
+
+	/** IntelliJ 변경 목록 키. 문자 키는 한글 입력 상태에서도 동작하도록 e.code로 비교한다 */
+	private onKey(e: KeyboardEvent) {
+		if (e.target !== this.listEl) return;
+		const rows = this.keyRows();
+		const cur = rows.findIndex((r) => r.dataset.key === this.selected);
+		const row = rows[cur] as HTMLElement | undefined;
+		const isHead = !!row?.classList.contains("light-git-group-head");
+		const collapsed = !!row?.parentElement?.classList.contains("is-collapsed");
+		const mod = e.ctrlKey || e.metaKey;
+		const action = (label: string) => row?.querySelector<HTMLElement>(`.light-git-file-actions [aria-label="${label}"]`)?.click();
+		if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Home" || e.key === "End") {
+			const next = e.key === "ArrowDown" ? Math.min(cur + 1, rows.length - 1) : e.key === "ArrowUp" ? Math.max(cur - 1, 0) : e.key === "Home" ? 0 : rows.length - 1;
+			if (rows[next]) this.select(rows[next]);
+		} else if (!row) return;
+		else if (e.key === " ") row.querySelector<HTMLInputElement>("input")?.click();
+		else if (e.key === "Enter" || (mod && e.code === "KeyD")) row.click();
+		else if (e.key === "ArrowRight" && isHead && collapsed) row.click();
+		else if (e.key === "ArrowLeft" && isHead && !collapsed) row.click();
+		else if (e.key === "ArrowLeft" && !isHead) {
+			const head = row.closest(".light-git-group")?.querySelector<HTMLElement>(".light-git-group-head");
+			if (head) this.select(head);
+		} else if (e.key === "F4") action("파일 열기");
+		else if (mod && e.altKey && e.code === "KeyZ") action("변경 버리기");
+		else return;
+		e.preventDefault();
+		e.stopPropagation();
 	}
 
 	async refresh() {
@@ -166,6 +246,7 @@ export class SourceControlView extends ItemView {
 		const unpushed = this.state?.unpushed ?? 0;
 		this.contentEl.toggleClass("is-busy", !!running);
 		this.commitBtn.disabled = !!running || !!this.state?.conflicts.length;
+		this.commitOnlyBtn.disabled = this.commitBtn.disabled || !(this.state?.merging || this.state?.changes.length);
 		this.statusEl.empty();
 		this.statusEl.toggleClass("is-empty", !running && !last && !unpushed);
 		if (running) {
@@ -208,7 +289,11 @@ export class SourceControlView extends ItemView {
 	}
 
 	private render(merging: boolean, conflicts: string[], changes: WorkChange[], copies: string[]) {
+		const scrollTop = this.listEl.scrollTop; // 체크박스를 누를 때마다 다시 그리므로 위치를 지킨다
 		this.listEl.empty();
+		const grouped = this.isGrouped();
+		this.groupBtn.toggleClass("is-active", grouped);
+		this.groupBtn.setAttribute("aria-pressed", String(grouped));
 		if (conflicts.length) {
 			const g = this.group("conflicts", "충돌", conflicts.length, "is-conflict");
 			for (const p of conflicts) this.row(g, p, "conflict", null, () => this.plugin.openMerge(p));
@@ -225,13 +310,16 @@ export class SourceControlView extends ItemView {
 		const g = this.group("changes", merging ? "머지됨" : "변경", query ? `${shown.length}/${changes.length}` : changes.length, "", groupCheck(shown), (on) => this.toggle(shown.map((c) => c.path), on));
 		if (!shown.length && query) g.createDiv({ cls: "light-git-empty", text: "검색 결과 없음" });
 		else if (!changes.length && !merging) g.createDiv({ cls: "light-git-empty", text: "변경 사항 없음" });
+		// Diff 창에서 F7로 파일 사이를 오가는 순서 = 화면 순서
+		const diffOrder: string[] = [];
 		const fileRows = (parent: HTMLElement, files: WorkChange[]) => {
 			for (const c of files) {
+				diffOrder.push(c.path);
 				const check = merging ? null : c.staged && c.unstaged ? "some" : c.staged ? "all" : "none";
-				this.row(parent, c.path, c.type, check, () => this.plugin.openChangeDiff(c.path));
+				this.row(parent, c.path, c.type, check, () => this.plugin.openChangeDiff(c.path, diffOrder));
 			}
 		};
-		if (changes.length < MANY_FILES) fileRows(g, shown);
+		if (!grouped) fileRows(g, shown);
 		else {
 			const folders = new Map<string, WorkChange[]>();
 			for (const c of shown) {
@@ -251,22 +339,27 @@ export class SourceControlView extends ItemView {
 				});
 			}
 		}
+		this.markSelected();
+		this.listEl.scrollTop = scrollTop;
 	}
 
 	/** 접을 수 있는 그룹 헤더. check가 있으면 '전체 선택' 체크박스 */
 	private group(id: string, title: string, count: number | string, cls: string, check: "all" | "some" | "none" | null = null, onCheck?: (on: boolean) => void, parent = this.listEl) {
 		const sec = parent.createDiv({ cls: `light-git-group ${cls}` });
-		const head = sec.createDiv({ cls: "light-git-group-head" });
+		const head = sec.createDiv({ cls: "light-git-group-head", attr: { "data-key": `g:${id}`, role: "treeitem" } });
 		const chevron = head.createSpan({ cls: "light-git-chevron" });
 		setIcon(chevron, this.collapsed.has(id) ? "chevron-right" : "chevron-down");
 		if (check) this.checkbox(head, check, (on) => onCheck?.(on));
 		head.createSpan({ cls: "light-git-group-title", text: title });
 		head.createSpan({ cls: "light-git-group-count", text: String(count) });
+		head.setAttribute("aria-expanded", String(!this.collapsed.has(id)));
 		head.onclick = () => {
 			if (this.collapsed.has(id)) this.collapsed.delete(id);
 			else this.collapsed.add(id);
 			sec.toggleClass("is-collapsed", this.collapsed.has(id));
+			head.setAttribute("aria-expanded", String(!this.collapsed.has(id)));
 			setIcon(chevron, this.collapsed.has(id) ? "chevron-right" : "chevron-down");
+			this.select(head);
 		};
 		sec.toggleClass("is-collapsed", this.collapsed.has(id));
 		return sec.createDiv({ cls: "light-git-group-body" });
@@ -277,6 +370,7 @@ export class SourceControlView extends ItemView {
 		const wrap = parent.createEl("label", { cls: "light-git-check-wrap" });
 		wrap.onclick = (e) => e.stopPropagation();
 		const cb = wrap.createEl("input", { type: "checkbox", cls: "light-git-check" });
+		cb.tabIndex = -1; // 목록에서 Space로 누른다. 행마다 Tab이 멈추지 않게
 		cb.checked = state === "all";
 		cb.indeterminate = state === "some";
 		cb.onclick = (e) => {
@@ -288,15 +382,19 @@ export class SourceControlView extends ItemView {
 	}
 
 	private row(parent: HTMLElement, path: string, type: string, check: "all" | "some" | "none" | null, onClick: () => void, onDeleteCopy?: () => void) {
-		const row = parent.createDiv({ cls: `light-git-file type-${type}`, attr: { "aria-label": path } });
+		const row = parent.createDiv({ cls: `light-git-file type-${type}`, attr: { "aria-label": path, "data-key": `f:${path}`, role: "treeitem" } });
 		if (check) this.checkbox(row, check, (on) => this.toggle([path], on));
 		const slash = path.lastIndexOf("/");
 		const name = row.createDiv({ cls: "light-git-file-name" });
 		name.createSpan({ cls: "light-git-file-base", text: path.slice(slash + 1) });
 		if (slash > 0) name.createSpan({ cls: "light-git-file-dir", text: path.slice(0, slash) });
-		row.onclick = onClick;
+		row.onclick = () => {
+			this.select(row);
+			onClick();
+		};
 
 		const actions = row.createDiv({ cls: "light-git-file-actions" });
+		const menu: [string, string, () => void][] = [[type === "conflict" ? "git-merge" : "diff", type === "conflict" ? "충돌 해결" : "차이 보기", onClick]];
 		const action = (icon: string, label: string, run: () => void) => {
 			const b = actions.createDiv({ cls: "clickable-icon light-git-icon", attr: { "aria-label": label } });
 			setIcon(b, icon);
@@ -304,6 +402,7 @@ export class SourceControlView extends ItemView {
 				e.stopPropagation();
 				run();
 			};
+			menu.push([icon, label, run]);
 		};
 		if (type !== "deleted") action("file-text", "파일 열기", () => this.plugin.openFile(path));
 		if (onDeleteCopy) action("trash-2", "사본 삭제", onDeleteCopy);
@@ -314,5 +413,12 @@ export class SourceControlView extends ItemView {
 				new ConfirmModal(this.app, `${path}\n변경을 버립니다 (${what}). 되돌릴 수 없습니다.`, "버리기", () => this.plugin.discard(path)).open();
 			});
 		}
+		row.oncontextmenu = (e) => {
+			e.preventDefault();
+			this.select(row);
+			const m = new Menu();
+			for (const [icon, label, run] of menu) m.addItem((item) => item.setTitle(label).setIcon(icon).onClick(run));
+			m.showAtMouseEvent(e);
+		};
 	}
 }

@@ -321,14 +321,128 @@ body:not(.is-mobile) .mod-right-split .light-git-view > .light-git-list:last-chi
 /* ---------- Diff 모달 ---------- */
 .light-git-diff-modal {
 	width: min(1000px, 95vw);
+	height: 88vh;
+}
+.light-git-diff-body.modal-content {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	overflow: hidden;
 }
 .light-git-diff {
+	flex: 1;
+	min-height: 0;
 	font-family: var(--font-monospace);
 	font-size: var(--font-ui-smaller);
 	line-height: 1.55;
-	overflow-x: auto;
+	overflow: auto;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--radius-s);
+}
+.light-git-diff-bar {
+	flex: none;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 12px;
+	margin-bottom: 8px;
+}
+.light-git-diff-tools {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+}
+.light-git-diff-tools .light-git-toolbar-sep {
+	margin: 0 6px;
+}
+.light-git-diff-tools .light-git-diff-tool {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	background: transparent;
+	border: none;
+	box-shadow: none;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+.light-git-diff-tools .light-git-diff-tool:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+.light-git-diff-tool svg {
+	width: 15px;
+	height: 15px;
+}
+.light-git-diff-count {
+	padding: 0 6px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	white-space: nowrap;
+}
+.light-git-diff-edge {
+	color: var(--text-accent);
+	font-size: var(--font-ui-smaller);
+}
+.light-git-diff-edge:empty {
+	display: none;
+}
+.is-mobile .light-git-diff-tools .light-git-diff-tool {
+	width: 34px;
+	height: 34px;
+}
+/* 바뀐 단어 */
+.light-git-word {
+	border-radius: 2px;
+	background: rgba(var(--color-blue-rgb), 0.28);
+}
+.light-git-diff-line.del .light-git-word {
+	background: rgba(var(--color-red-rgb), 0.28);
+}
+.light-git-diff-line.add .light-git-word {
+	background: rgba(var(--color-green-rgb), 0.3);
+}
+/* 지금 보고 있는 변경 */
+.light-git-diff-row.is-current-hunk > .light-git-ln:first-child,
+.light-git-diff-line.is-current-hunk > .light-git-ln:first-child {
+	box-shadow: inset 3px 0 var(--interactive-accent);
+}
+/* 블록 되돌리기: 줄 번호 칸에 겹친다. PC에서 줄에 올리거나 지금 보는 변경일 때 보인다 */
+.light-git-ln {
+	position: relative;
+}
+.light-git-diff-revert,
+.light-git-diff-line .light-git-diff-revert {
+	position: absolute;
+	top: 0;
+	left: 3px;
+	width: 1.6em;
+	height: 1.55em;
+	padding: 0;
+	display: none;
+	align-items: center;
+	justify-content: center;
+	background: var(--background-primary);
+	border: none;
+	box-shadow: none;
+	color: var(--text-accent);
+	cursor: pointer;
+}
+.light-git-diff-revert svg {
+	width: 13px;
+	height: 13px;
+}
+body:not(.is-mobile) .is-current-hunk .light-git-diff-revert,
+body:not(.is-mobile) .light-git-diff-row:hover .light-git-diff-revert,
+body:not(.is-mobile) .light-git-diff-line:hover .light-git-diff-revert {
+	display: inline-flex;
+}
+.light-git-diff-line > .light-git-diff-revert {
+	position: static;
+	flex: none;
+	margin-left: auto;
 }
 .light-git-diff-line {
 	display: flex;
@@ -416,8 +530,11 @@ body:not(.is-mobile) .mod-right-split .light-git-view > .light-git-list:last-chi
 .light-git-diff-row > .light-git-code {
 	padding: 0 6px;
 }
-.light-git-diff-row > .del { background: rgba(var(--color-red-rgb), 0.1); }
-.light-git-diff-row > .add { background: rgba(var(--color-green-rgb), 0.12); }
+/* 수정 파랑, 추가 초록, 삭제 회색 (충돌 화면과 같은 색) */
+.light-git-diff-row.is-modified > .del,
+.light-git-diff-row.is-modified > .add { background: rgba(var(--color-blue-rgb), 0.13); }
+.light-git-diff-row.is-inserted > .add { background: rgba(var(--color-green-rgb), 0.14); }
+.light-git-diff-row.is-removed > .del { background: rgba(var(--mono-rgb-100, 128, 128, 128), 0.16); }
 .light-git-diff-row > .empty { background: var(--background-secondary); }
 
 /* ---------- 머지 모달 (IntelliJ 3단) ---------- */
@@ -772,6 +889,151 @@ body:not(.is-mobile) .mod-right-split .light-git-view > .light-git-list:last-chi
 		display: inline;
 	}
 }
+
+/* ---------- IntelliJ 느낌: PC는 촘촘하게, 툴바는 아이콘, 선택 행은 파랑 (docs/UI.md) ---------- */
+.light-git-toolbar {
+	background: var(--background-secondary);
+}
+.light-git-toolbar-title {
+	flex: 0 1 auto;
+	white-space: nowrap;
+}
+.light-git-branch {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	margin: 0 6px;
+	overflow: hidden;
+	white-space: nowrap;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+.light-git-branch-icon {
+	display: inline-flex;
+	flex: none;
+}
+.light-git-branch-icon svg {
+	width: 12px;
+	height: 12px;
+}
+.light-git-toolbar .light-git-icon.is-active {
+	background: rgba(var(--color-blue-rgb), 0.18);
+	color: var(--text-normal);
+}
+.light-git-view .light-git-list:focus {
+	outline: none;
+	box-shadow: none;
+}
+.light-git-file.is-selected,
+.light-git-group-head.is-selected,
+.light-git-commit.is-selected > .light-git-commit-head {
+	background: rgba(var(--color-blue-rgb), 0.13);
+}
+.light-git-list:focus .light-git-file.is-selected,
+.light-git-list:focus .light-git-group-head.is-selected,
+.light-git-list:focus .light-git-commit.is-selected > .light-git-commit-head {
+	background: rgba(var(--color-blue-rgb), 0.24);
+	box-shadow: inset 2px 0 var(--interactive-accent);
+}
+.light-git-icon:focus-visible,
+.light-git-diff-tool:focus-visible,
+.light-git-tool-btn:focus-visible {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: -2px;
+}
+body:not(.is-mobile) .light-git-file,
+body:not(.is-mobile) .light-git-group-head {
+	height: 24px;
+}
+.light-git-commit-actions .light-git-commit-only {
+	flex: none;
+}
+.is-mobile .light-git-commit-only {
+	display: none;
+}
+.light-git-commit-actions button:disabled {
+	opacity: 0.4;
+	pointer-events: none;
+}
+.light-git-diff-modes button {
+	height: 26px;
+}
+
+/* History: 좁으면 커밋을 그 자리에서 펼치고, 넓으면 IntelliJ Log처럼 목록 | 상세 */
+.light-git-history-body {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+}
+.light-git-history-body > .light-git-list {
+	min-width: 0;
+	padding: 0;
+}
+.light-git-toolbar .light-git-history-filter {
+	flex: 0 1 180px;
+	min-width: 60px;
+	height: 24px;
+	margin: 0 6px 0 auto;
+	font-size: var(--font-ui-smaller);
+}
+.light-git-commit-detail {
+	display: none;
+}
+.is-wide .light-git-commit {
+	border-bottom: none;
+}
+.is-wide .light-git-commit-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: 24px;
+	padding: 0 8px 0 4px;
+}
+.is-wide .light-git-commit-msg {
+	flex: 1;
+	min-width: 0;
+}
+.is-wide .light-git-commit-meta {
+	flex: none;
+	white-space: nowrap;
+}
+.is-wide .light-git-commit-detail {
+	display: block;
+	flex: 0 0 38%;
+	min-width: 0;
+	overflow-y: auto;
+	padding: 8px 0;
+	border-left: 1px solid var(--background-modifier-border);
+}
+.is-wide .light-git-commit-detail .light-git-file {
+	padding-left: 10px;
+}
+.light-git-detail-message {
+	padding: 0 10px;
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-weight: var(--font-semibold);
+}
+.light-git-detail-meta {
+	padding: 4px 10px 8px;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	border-bottom: 1px solid var(--background-modifier-border);
+	margin-bottom: 4px;
+}
+.light-git-graph {
+	flex: none;
+}
+.light-git-graph line {
+	stroke-width: 1.6;
+	fill: none;
+}
+.light-git-graph .lane-0 { stroke: var(--color-blue); fill: var(--color-blue); }
+.light-git-graph .lane-1 { stroke: var(--color-green); fill: var(--color-green); }
+.light-git-graph .lane-2 { stroke: var(--color-red); fill: var(--color-red); }
+.light-git-graph .lane-3 { stroke: var(--text-muted); fill: var(--text-muted); }
 
 /* 확인창 문구의 줄바꿈 유지 */
 .light-git-confirm-text {

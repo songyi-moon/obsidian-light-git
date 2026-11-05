@@ -10,7 +10,7 @@ import { conflictCopyOriginal, isNewConflictCopy, type CommitInfo, type GitBacke
 import { MergeModal, type MergeHost } from "./merge/mergeModal";
 import { DEFAULT_SETTINGS, LightGitSettingTab, type LightGitSettings } from "./settings";
 import { ConfirmModal } from "./ui/confirmModal";
-import { DiffModal } from "./ui/diffModal";
+import { DiffModal, type DiffContent, type DiffFiles } from "./ui/diffModal";
 import { HISTORY_VIEW, HistoryView } from "./ui/historyView";
 import { SOURCE_CONTROL_VIEW, SourceControlView } from "./ui/sourceControlView";
 
@@ -67,6 +67,7 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 		this.addRibbonIcon("git-branch", "Git 변경 사항", () => this.activateView(SOURCE_CONTROL_VIEW));
 		this.addCommand({ id: "sync", name: "커밋 & 동기화", callback: () => this.manualSync() });
 		this.addCommand({ id: "sync-default", name: "커밋 & 동기화 (기본 메시지)", callback: () => this.sync() });
+		this.addCommand({ id: "commit", name: "커밋 (올리지 않음)", callback: () => this.commitOnly() });
 		this.addCommand({ id: "pull", name: "Pull", callback: () => this.pullCommand() });
 		this.addCommand({ id: "push", name: "Push", callback: () => this.pushCommand() });
 		this.addCommand({ id: "connect", name: "원격 저장소 연결", callback: () => this.connect() });
@@ -399,6 +400,16 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 		return this.staging;
 	}
 
+	/** 커밋만 하고 올리지 않는다 (IntelliJ Commit). 나중에 동기화하면 함께 올라간다. */
+	commitOnly(message?: string, stagedOnly = false): Promise<boolean> {
+		return this.run("커밋", async (b) => {
+			if (!(await b.isRepo())) return "먼저 설정에서 '원격 저장소 연결'을 실행하세요.";
+			await this.staging;
+			const committed = await b.commit(message ?? ((n: number) => this.defaultMessage(n)), stagedOnly);
+			return committed ? `커밋 완료 (${committed}개). 동기화하면 원격에 올라갑니다.` : "커밋할 변경이 없습니다.";
+		});
+	}
+
 	/** commit → pull(merge) → push. stagedOnly면 스테이징된 파일만 커밋 (자동 동기화는 항상 전체). */
 	sync(message?: string, quiet = false, stagedOnly = false): Promise<boolean> {
 		return this.run(
@@ -430,8 +441,13 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 		workspace.revealLeaf(leaf);
 	}
 
-	activateHistory() {
-		return this.activateView(HISTORY_VIEW);
+	/** PC는 IntelliJ Log처럼 넓은 탭에, 모바일은 사이드바에 연다. 이미 열려 있으면 그 자리로 */
+	async activateHistory() {
+		const { workspace } = this.app;
+		if (Platform.isMobile || workspace.getLeavesOfType(HISTORY_VIEW).length) return this.activateView(HISTORY_VIEW);
+		const leaf = workspace.getLeaf("tab");
+		await leaf.setViewState({ type: HISTORY_VIEW, active: true });
+		workspace.revealLeaf(leaf);
 	}
 
 	refreshViews() {
@@ -450,14 +466,61 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 		else new Notice("Obsidian에서 열 수 없는 파일입니다 (숨김 폴더 등).");
 	}
 
-	async openChangeDiff(path: string) {
+	/** 목록의 파일 사이를 오갈 수 있게 한다 (하나면 목록 없음) */
+	private diffFiles(path: string, paths: string[], load: (path: string) => Promise<DiffContent>): DiffFiles | undefined {
+		if (paths.length < 2) return undefined;
+		return { count: paths.length, index: Math.max(paths.indexOf(path), 0), load: (i) => load(paths[i]) };
+	}
+
+	private changeContent = async (path: string): Promise<DiffContent> => {
+		const b = await this.getBackend();
+		const adapter = this.app.vault.adapter;
+		const vp = this.vaultPath(path);
+		return {
+			title: `${path} (마지막 커밋 → 현재)`,
+			oldText: await b.readAt("HEAD", path),
+			newText: (await adapter.exists(vp)) ? await adapter.read(vp) : null,
+			openFile: () => this.openFile(path),
+			// 머지 중에는 변경 전체가 머지 커밋에 들어가므로 변경 목록처럼 되돌리기를 막는다
+			saveNew: (await b.isMerging()) ? undefined : (expected, next) => this.saveReverted(vp, expected, next),
+		};
+	};
+
+	/** Diff 창이 연 뒤 파일이 바뀌었으면 쓰지 않는다 (방금 고친 내용을 옛 내용으로 덮어쓰지 않도록) */
+	private async saveReverted(vaultPath: string, expected: string, next: string): Promise<boolean> {
+		const changed = () => void new Notice("Diff를 연 뒤 파일이 바뀌었습니다. 다시 열어 주세요.");
+		if (this.busy) {
+			new Notice("Git 작업이 이미 진행 중입니다.");
+			return false;
+		}
+		const { vault } = this.app;
+		const file = vault.getAbstractFileByPath(vaultPath);
 		try {
-			const b = await this.getBackend();
-			const adapter = this.app.vault.adapter;
-			const before = await b.readAt("HEAD", path);
-			const vp = this.vaultPath(path);
-			const after = (await adapter.exists(vp)) ? await adapter.read(vp) : null;
-			new DiffModal(this.app, `${path} (마지막 커밋 → 현재)`, before, after).open();
+			if (file instanceof TFile) {
+				let same = true;
+				await vault.process(file, (cur) => {
+					same = cur === expected;
+					return same ? next : cur;
+				});
+				if (!same) changed();
+				return same;
+			}
+			if ((await vault.adapter.read(vaultPath)) !== expected) {
+				changed();
+				return false;
+			}
+			await vault.adapter.write(vaultPath, next);
+			this.refreshViews(); // 숨김 폴더 파일은 볼트 이벤트가 오지 않는다
+			return true;
+		} catch (e) {
+			new Notice(`되돌리기 실패: ${errorText(e)}`);
+			return false;
+		}
+	}
+
+	async openChangeDiff(path: string, paths: string[] = [path]) {
+		try {
+			new DiffModal(this.app, await this.changeContent(path), this.diffFiles(path, paths, this.changeContent)).open();
 		} catch (e) {
 			new Notice(`diff 실패: ${errorText(e)}`);
 		}
@@ -468,18 +531,22 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 			const adapter = this.app.vault.adapter;
 			const read = async (p: string) => ((await adapter.exists(this.vaultPath(p))) ? await adapter.read(this.vaultPath(p)) : null);
 			const original = conflictCopyOriginal(copy);
-			new DiffModal(this.app, `${original} (현재 → 충돌 사본)`, await read(original), await read(copy)).open();
+			new DiffModal(this.app, { title: `${original} (현재 → 충돌 사본)`, oldText: await read(original), newText: await read(copy), openFile: () => this.openFile(copy) }).open();
 		} catch (e) {
 			new Notice(`diff 실패: ${errorText(e)}`);
 		}
 	}
 
-	async openCommitDiff(c: CommitInfo, path: string) {
+	async openCommitDiff(c: CommitInfo, path: string, paths: string[] = [path]) {
 		try {
 			const b = await this.getBackend();
-			const before = c.parent ? await b.readAt(c.parent, path) : null;
-			const after = await b.readAt(c.oid, path);
-			new DiffModal(this.app, `${path} @ ${c.oid.slice(0, 7)}`, before, after).open();
+			const load = async (p: string): Promise<DiffContent> => ({
+				title: `${p} @ ${c.oid.slice(0, 7)}`,
+				oldText: c.parent ? await b.readAt(c.parent, p) : null,
+				newText: await b.readAt(c.oid, p),
+				openFile: () => this.openFile(p),
+			});
+			new DiffModal(this.app, await load(path), this.diffFiles(path, paths, load)).open();
 		} catch (e) {
 			new Notice(`diff 실패: ${errorText(e)}`);
 		}

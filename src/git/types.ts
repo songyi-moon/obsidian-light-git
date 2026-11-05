@@ -38,6 +38,8 @@ export interface CommitInfo {
 	oid: string;
 	/** 첫 번째 부모 (최초 커밋/shallow 경계면 없음) */
 	parent?: string;
+	/** 모든 부모 (머지 커밋은 둘 이상). History 그래프용 */
+	parents: string[];
 	message: string;
 	author: string;
 	/** unix seconds */

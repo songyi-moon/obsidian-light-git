@@ -615,6 +615,7 @@ export class IsoBackend implements GitBackend {
 		return entries.map((e) => ({
 			oid: e.oid,
 			parent: e.commit.parent[0],
+			parents: e.commit.parent,
 			message: e.commit.message.trim(),
 			author: e.commit.author.name,
 			timestamp: e.commit.author.timestamp,

@@ -77,6 +77,14 @@ export class MergeModal extends Modal {
 		this.gridEl = this.contentEl.createDiv({ cls: "light-git-merge-grid" });
 		this.renderFooter();
 		this.renderGrid();
+		this.scope.register([], "F7", () => {
+			this.scrollToPending(1);
+			return false;
+		});
+		this.scope.register(["Shift"], "F7", () => {
+			this.scrollToPending(-1);
+			return false;
+		});
 	}
 
 	onClose() {
@@ -121,13 +129,14 @@ export class MergeModal extends Modal {
 
 	private renderToolbar() {
 		const bar = this.contentEl.createDiv({ cls: "light-git-merge-toolbar" });
-		const btn = (icon: string, text: string, onClick: () => void) => {
-			const b = bar.createEl("button", { cls: "light-git-tool-btn" });
+		const btn = (icon: string, text: string, onClick: () => void, key = "") => {
+			const b = bar.createEl("button", { cls: "light-git-tool-btn", attr: key ? { "aria-label": `${text} (${key})` } : {} });
 			setIcon(b.createSpan({ cls: "light-git-tool-icon" }), icon);
 			b.createSpan({ text });
 			b.onclick = onClick;
 		};
-		btn("arrow-down", "다음 미해결", () => this.scrollToNextPending());
+		btn("arrow-up", "이전 미해결", () => this.scrollToPending(-1), "Shift+F7");
+		btn("arrow-down", "다음 미해결", () => this.scrollToPending(1), "F7");
 		bar.createDiv({ cls: "light-git-toolbar-sep" });
 		btn("wand", "충돌 없는 변경 모두 적용", () => this.mutate(() => applyNonConflicting(this.regions)));
 		bar.createDiv({ cls: "light-git-toolbar-sep" });
@@ -146,13 +155,14 @@ export class MergeModal extends Modal {
 		this.saveBtn.onclick = () => this.trySave();
 	}
 
-	/** 지금 보이는 위치 아래의 미해결 영역으로. 더 없으면 처음 것으로 돌아간다 */
-	private scrollToNextPending() {
+	/** 지금 보이는 위치 아래(위)의 미해결 영역으로. 더 없으면 반대쪽 끝으로 돌아간다 */
+	private scrollToPending(dir: 1 | -1) {
 		const rows = Array.from(this.gridEl.querySelectorAll<HTMLElement>(".light-git-merge-row.is-pending"));
 		if (!rows.length) return void new Notice("처리할 영역이 남아 있지 않습니다.");
 		const top = this.gridEl.getBoundingClientRect().top;
-		const next = rows.find((r) => r.getBoundingClientRect().top > top + 4) ?? rows[0];
-		this.gridEl.scrollTop += next.getBoundingClientRect().top - top;
+		const rowTop = (r: HTMLElement) => r.getBoundingClientRect().top;
+		const next = dir > 0 ? (rows.find((r) => rowTop(r) > top + 4) ?? rows[0]) : ([...rows].reverse().find((r) => rowTop(r) < top - 4) ?? rows[rows.length - 1]);
+		this.gridEl.scrollTop += rowTop(next) - top;
 	}
 
 	private mutate(fn: () => void) {

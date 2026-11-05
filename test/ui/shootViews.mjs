@@ -50,7 +50,7 @@ check("staging: one list with checkboxes (all/some/none)", JSON.stringify(info.s
 check("commit button / hint show selection", info.btnStaging === "2개 커밋 & 동기화" && info.btnMerging === "커밋 & 동기화" && info.hint === "2/4 선택", `${info.btnStaging} | ${info.hint}`);
 check("placeholder counts selected files", info.placeholder.includes("(desktop) 2개"), info.placeholder);
 check("commit box pinned to bottom", info.commitBoxAtBottom);
-check("history", info.commits === 3 && info.historyFiles === 2);
+check("history", info.commits === 5 && info.historyFiles === 2, JSON.stringify([info.commits, info.historyFiles]));
 const mergeUi = await page.evaluate(() => {
   const btn = (id) => document.querySelector(`#${id} .light-git-commit-btn`);
   return {
@@ -78,7 +78,7 @@ check("no changes: button is plain sync", clean[0] === "동기화" && clean[1] =
 
 // History: 아직 올리지 않은 커밋만 표시
 const marks = await page.evaluate(() => [...document.querySelectorAll("#history .light-git-commit-meta")].map((m) => m.textContent.includes("push 대기")));
-check("history marks unpushed commits", JSON.stringify(marks) === "[true,false,false]", JSON.stringify(marks));
+check("history marks unpushed commits", JSON.stringify(marks) === "[true,false,false,false,false]", JSON.stringify(marks));
 
 // 파일이 많으면 폴더별로 묶고 검색칸을 보여준다
 const hiddenFilter = await page.evaluate(() => getComputedStyle(document.querySelector("#staging .light-git-filter")).display === "none");
@@ -299,6 +299,185 @@ const inputs = await page.evaluate(() => window.__settingInputs().map((i) => [i.
 const exact = ["text", "off", "off", false];
 check("settings: exact text fields", JSON.stringify(inputs.slice(0, 5)) === JSON.stringify([["url", "off", "off", false], exact, exact, exact, ["password", null, null, inputs[4][3]]]), JSON.stringify(inputs.slice(0, 5)));
 check("settings: other fields keep defaults", inputs.slice(5).every((i) => i[1] === null), JSON.stringify(inputs.slice(5)));
+
+// ---------- IntelliJ 흐름 ----------
+// Diff: 첫 변경으로 시작, F7 이동, 끝에서 한 번 더 누르면 다음 파일
+const press = async (key, mods = []) => {
+  for (const m of mods) await page.keyboard.down(m);
+  await page.keyboard.press(key);
+  for (const m of [...mods].reverse()) await page.keyboard.up(m);
+  await new Promise((r) => setTimeout(r, 30));
+};
+await open("", { width: 1200, height: 700 });
+await page.evaluate(() => { window.openNavDiff(); window.__calls.length = 0; });
+const navState = () => page.evaluate(() => {
+  const body = document.querySelector(".modal .light-git-diff");
+  const cur = document.querySelector(".modal .is-current-hunk");
+  const b = body.getBoundingClientRect();
+  const r = cur?.getBoundingClientRect();
+  return {
+    title: document.querySelector(".modal .modal-title").textContent,
+    counts: [...document.querySelectorAll(".modal .light-git-diff-count")].map((c) => c.textContent),
+    edge: document.querySelector(".modal .light-git-diff-edge").textContent,
+    current: cur?.textContent ?? "",
+    visible: !!r && r.top >= b.top && r.bottom <= b.bottom,
+  };
+});
+let nav = await navState();
+check("diff nav: starts on the first change", nav.counts[0] === "1 / 2" && nav.counts[1] === "파일 1 / 3" && nav.current.includes("줄 3 수정") && nav.visible, JSON.stringify(nav));
+await page.screenshot({ path: `${out}/diff-nav.png` });
+const words = await page.evaluate(() => [...document.querySelectorAll(".modal .is-current-hunk .light-git-word")].map((w) => w.textContent));
+check("diff: only the changed word is highlighted", JSON.stringify(words) === JSON.stringify([" 수정"]), JSON.stringify(words));
+await press("F7");
+nav = await navState();
+check("diff nav: F7 goes to the next change and scrolls to it", nav.counts[0] === "2 / 2" && nav.current.includes("줄 31 수정") && nav.visible, JSON.stringify(nav));
+await press("F7");
+nav = await navState();
+check("diff nav: F7 at the end warns first", nav.title === "notes/A.md" && nav.edge.includes("F7") && nav.edge.includes("다음 파일"), JSON.stringify(nav));
+await press("F7", ["Shift"]);
+nav = await navState();
+check("diff nav: moving back clears the warning", nav.counts[0] === "1 / 2" && nav.edge === "", JSON.stringify(nav));
+await press("F7");
+await press("F7");
+await press("F7");
+nav = await navState();
+check("diff nav: second F7 opens the next file at its first change", nav.title === "notes/B.md" && nav.counts[0] === "1 / 2" && nav.counts[1] === "파일 2 / 3", JSON.stringify(nav));
+await press("F7", ["Shift"]);
+await press("F7", ["Shift"]);
+nav = await navState();
+check("diff nav: Shift+F7 twice returns to the previous file's last change", nav.title === "notes/A.md" && nav.counts[0] === "2 / 2", JSON.stringify(nav));
+await press("ArrowRight", ["Alt"]);
+nav = await navState();
+check("diff nav: Alt+Right moves files", nav.title === "notes/B.md", JSON.stringify(nav));
+await press("ArrowLeft", ["Alt"]);
+await press("ArrowLeft", ["Alt"]);
+nav = await navState();
+check("diff nav: Alt+Left stops at the first file", nav.title === "notes/A.md", JSON.stringify(nav));
+
+// 블록 되돌리기: 확인 후 그 블록만 바꾸고, 저장에 실패하면 화면을 그대로 둔다
+const revertClick = () => page.evaluate(() => document.querySelector(".modal .is-current-hunk .light-git-diff-revert").click());
+const confirm = (text) => page.evaluate((t) => [...document.querySelectorAll(".modal button")].find((b) => b.textContent === t).click(), text);
+await press("F7", ["Shift"]); // 첫 변경으로
+await revertClick();
+const askedHunk = await page.evaluate(() => { const s = window.__saved; return { saved: s ?? null, asked: [...document.querySelectorAll(".modal button")].some((b) => b.textContent === "되돌리기") }; });
+check("hunk revert: asks first", askedHunk.asked && !askedHunk.saved, JSON.stringify(askedHunk));
+await confirm("되돌리기");
+await new Promise((r) => setTimeout(r, 30));
+const reverted = await page.evaluate(() => {
+  const { expected, next } = window.__saved;
+  return { keptOther: next.includes("A 줄 31 수정"), restored: next.includes("A 줄 3\n") && !next.includes("A 줄 3 수정"), expectedHas: expected.includes("A 줄 3 수정"), lines: next.split("\n").length, count: document.querySelector(".modal .light-git-diff-count").textContent };
+});
+check("hunk revert: only that hunk changes", reverted.keptOther && reverted.restored && reverted.expectedHas && reverted.lines === 40 && reverted.count === "1 / 1", JSON.stringify(reverted));
+await page.evaluate(() => { window.__saveOk = false; });
+await revertClick();
+await confirm("되돌리기");
+await new Promise((r) => setTimeout(r, 30));
+check("hunk revert: failed save keeps the view", (await page.evaluate(() => document.querySelector(".modal .light-git-diff-count").textContent)) === "1 / 1");
+await page.evaluate(() => { window.__saveOk = true; });
+await page.evaluate(() => [...document.querySelectorAll(".modal .light-git-diff-modes button")][1].click());
+check("hunk revert: available in unified view too", await page.evaluate(() => !!document.querySelector(".modal .is-current-hunk .light-git-diff-revert")));
+await page.evaluate(() => { window.__calls.length = 0; });
+await press("F4");
+const f4 = await page.evaluate(() => ({ calls: JSON.stringify(window.__calls), open: !!document.querySelector(".modal .light-git-diff") }));
+check("diff: F4 opens the note and closes the diff", f4.calls === '[["openFile",0]]' && !f4.open, JSON.stringify(f4));
+await page.evaluate(() => { window.openDiff(); });
+check("diff: no revert button without a target", await page.evaluate(() => !document.querySelector(".modal .light-git-diff-revert")));
+await page.evaluate(() => document.querySelectorAll(".modal-container > .modal").forEach((m) => m.remove()));
+
+// 변경 목록: 키보드만으로
+await open("", { width: 1260, height: 560 });
+await page.evaluate(() => { document.querySelector(".modal-container").style.pointerEvents = "none"; window.__calls.length = 0; document.querySelector("#staging .light-git-list").focus(); });
+const selectedKey = () => page.evaluate(() => document.querySelector("#staging .is-selected")?.dataset.key ?? null);
+await press("ArrowDown");
+check("keys: first down selects the group", (await selectedKey()) === "g:changes", String(await selectedKey()));
+await press("ArrowDown");
+check("keys: next row", (await selectedKey()) === "f:notes/a.md", String(await selectedKey()));
+await page.screenshot({ path: `${out}/views-selected.png`, clip: { x: 316, y: 0, width: 300, height: 520 } });
+await press("Space");
+const spaceCalls = await page.evaluate(() => JSON.stringify(window.__calls));
+check("keys: Space toggles the check and keeps the selection", spaceCalls === '[["unstage",["notes/a.md"]]]' && (await selectedKey()) === "f:notes/a.md", spaceCalls);
+await page.evaluate(() => { window.__calls.length = 0; });
+await press("Enter");
+const enterCall = await page.evaluate(() => window.__calls[0]);
+check("keys: Enter opens the diff with the whole list", enterCall?.[0] === "openChangeDiff" && enterCall[1] === "notes/a.md" && enterCall[2].length === 4, JSON.stringify(enterCall));
+await page.evaluate(() => { window.__calls.length = 0; });
+await press("KeyD", ["Control"]);
+check("keys: Ctrl+D opens the diff", (await page.evaluate(() => window.__calls[0]?.[0])) === "openChangeDiff");
+await page.evaluate(() => { window.__calls.length = 0; });
+await press("F4");
+check("keys: F4 opens the note", (await page.evaluate(() => JSON.stringify(window.__calls))) === '[["openFile","notes/a.md"]]');
+await press("KeyZ", ["Control", "Alt"]);
+const askDiscard = await page.evaluate(() => [...document.querySelectorAll(".modal button")].some((b) => b.textContent === "버리기"));
+check("keys: Ctrl+Alt+Z asks before discarding", askDiscard);
+await page.evaluate(() => document.querySelectorAll(".modal-container > .modal").forEach((m) => m.remove()));
+await press("ArrowLeft");
+check("keys: left goes up to the group", (await selectedKey()) === "g:changes", String(await selectedKey()));
+await press("ArrowLeft");
+check("keys: left again collapses", await page.evaluate(() => document.querySelector("#staging .light-git-group").classList.contains("is-collapsed")));
+await press("ArrowDown");
+check("keys: collapsed rows are skipped", (await selectedKey()) === "g:changes", String(await selectedKey()));
+await press("ArrowRight");
+check("keys: right expands", await page.evaluate(() => !document.querySelector("#staging .light-git-group").classList.contains("is-collapsed")));
+await press("End");
+check("keys: End goes to the last row", (await selectedKey()) === "f:old.md", String(await selectedKey()));
+
+// 우클릭 메뉴, 폴더 묶기, 커밋만 하기
+const menuItems = await page.evaluate(() => {
+  document.querySelector("#staging .light-git-file").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+  return window.__menu;
+});
+check("context menu: same actions as the row", JSON.stringify(menuItems) === JSON.stringify(["차이 보기", "파일 열기", "변경 버리기"]), JSON.stringify(menuItems));
+await page.evaluate(() => document.querySelector('#staging [aria-label="폴더별로 묶기"]').click());
+check("group toggle: folders on demand", await page.evaluate(() => document.querySelectorAll("#staging .is-folder").length === 3 && document.querySelector('#staging [aria-label="폴더별로 묶기"]').classList.contains("is-active")));
+await page.evaluate(() => document.querySelector('#staging [aria-label="폴더별로 묶기"]').click());
+check("group toggle: back to flat", await page.evaluate(() => !document.querySelector("#staging .is-folder")));
+await page.evaluate(() => { window.__calls.length = 0; document.querySelector("#staging .light-git-message").value = "메시지"; document.querySelector("#staging .light-git-commit-only").click(); });
+await new Promise((r) => setTimeout(r, 30));
+const onlyCall = await page.evaluate(() => ({ calls: JSON.stringify(window.__calls), msg: document.querySelector("#staging .light-git-message").value }));
+check("commit only: no sync, message cleared", onlyCall.calls.startsWith('[["commitOnly","메시지",') && !onlyCall.calls.includes('"sync"') && onlyCall.msg === "", JSON.stringify(onlyCall));
+check("commit only: off with no changes", await page.evaluate(() => document.querySelector("#clean .light-git-commit-only").disabled));
+check("commit only: off while conflicts remain", await page.evaluate(() => document.querySelector("#merging .light-git-commit-only").disabled));
+check("toolbar buttons work from the keyboard", await page.evaluate(() => { const b = document.querySelector('#staging [aria-label="Pull"]'); return b.getAttribute("role") === "button" && b.tabIndex === 0; }));
+check("branch shown in the toolbar", (await page.evaluate(() => document.querySelector("#staging .light-git-branch").textContent.trim())) === "main");
+
+// History: 넓으면 목록 | 상세 + 그래프
+const wide = () => page.evaluate(() => {
+  const root = document.querySelector("#historyWide");
+  return {
+    isWide: root.querySelector(".light-git-view").classList.contains("is-wide"),
+    selected: root.querySelector(".light-git-commit.is-selected .light-git-commit-msg")?.textContent,
+    detail: root.querySelector(".light-git-detail-message")?.textContent,
+    meta: root.querySelector(".light-git-detail-meta")?.textContent,
+    files: root.querySelectorAll(".light-git-commit-detail .light-git-file").length,
+    dots: root.querySelectorAll(".light-git-graph circle").length,
+    cols: new Set([...root.querySelectorAll(".light-git-graph circle")].map((c) => c.getAttribute("cx"))).size,
+    rows: root.querySelectorAll(".light-git-commit").length,
+  };
+});
+await new Promise((r) => setTimeout(r, 60));
+const w0 = await wide();
+check("history wide: list + detail + graph", w0.isWide && w0.selected.startsWith("vault backup") && w0.files === 2 && w0.dots === 5 && w0.cols === 2, JSON.stringify(w0));
+check("history narrow: no graph or detail", await page.evaluate(() => !document.querySelector("#history .light-git-graph") && getComputedStyle(document.querySelector("#history .light-git-commit-detail")).display === "none"));
+await page.evaluate(() => document.querySelector("#historyWide .light-git-list").focus());
+await press("ArrowDown");
+await new Promise((r) => setTimeout(r, 60));
+const w1 = await wide();
+check("history wide: arrow keys follow in the detail, full message", w1.selected.startsWith("Merge") && w1.detail.includes("본문 줄") && w1.meta.includes("song"), JSON.stringify(w1));
+await page.evaluate(() => { window.__calls.length = 0; });
+await press("Enter");
+const histCall = await page.evaluate(() => window.__calls[0]);
+check("history wide: Enter opens the first file's diff with the list", histCall?.[0] === "openCommitDiff" && histCall[2] === "notes/a.md" && histCall[3].length === 2, JSON.stringify(histCall));
+await page.setViewport({ width: 3600, height: 560 });
+const shootWide = await page.evaluate(() => { window.scrollTo(0, 0); const r = document.querySelector("#historyWide").getBoundingClientRect(); return { x: r.x, y: r.y }; });
+await page.screenshot({ path: `${out}/views-history-wide.png`, clip: { x: shootWide.x, y: shootWide.y, width: 900, height: 520 } });
+await page.evaluate(() => {
+  const i = document.querySelector("#historyWide .light-git-history-filter");
+  i.value = "pc에서";
+  i.dispatchEvent(new Event("input"));
+});
+await new Promise((r) => setTimeout(r, 60));
+const w2 = await wide();
+check("history search: filters by message, hides the graph", w2.rows === 1 && w2.dots === 0 && w2.selected === "PC에서 고친 내용", JSON.stringify(w2));
 
 // 좁은 화면(폰)은 한 줄로 시작 — 고른 방식은 기억되므로 새 페이지에서 확인
 await open("", { width: 400, height: 700 });

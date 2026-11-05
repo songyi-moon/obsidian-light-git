@@ -1,4 +1,5 @@
 import { setIcon, type ItemView } from "obsidian";
+import { asButton } from "./asButton";
 
 /** 툴바에 탭 고정(핀) 토글 버튼. 고정 상태가 바뀌면(탭 메뉴에서 바꿔도) 아이콘이 따라간다 */
 export function addPinButton(view: ItemView, bar: HTMLElement) {
@@ -9,6 +10,6 @@ export function addPinButton(view: ItemView, bar: HTMLElement) {
 		btn.toggleClass("is-active", pinned);
 	};
 	update(!!view.leaf.getViewState().pinned);
-	btn.onclick = () => view.leaf.togglePinned();
+	asButton(btn, () => view.leaf.togglePinned());
 	view.registerEvent(view.leaf.on("pinned-change", update));
 }
