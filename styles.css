@@ -1023,8 +1023,23 @@ body:not(.is-mobile) .light-git-group-head {
 	border-bottom: 1px solid var(--background-modifier-border);
 	margin-bottom: 4px;
 }
+/* 행 높이가 달라도 위아래 행과 선이 이어지도록 행 전체에 맞춘다. 1px은 행 사이 구분선 몫 */
 .light-git-graph {
-	flex: none;
+	position: absolute;
+	top: 0;
+	left: 4px;
+	height: calc(100% + 1px);
+	pointer-events: none;
+}
+.light-git-commit-body {
+	position: relative;
+}
+.light-git-list.has-graph .light-git-commit-head {
+	position: relative;
+	padding-left: calc(var(--light-git-graph-width) + 10px);
+}
+.light-git-list.has-graph .light-git-commit-files {
+	margin-left: var(--light-git-graph-width);
 }
 .light-git-graph line {
 	stroke-width: 1.6;

@@ -457,7 +457,41 @@ const wide = () => page.evaluate(() => {
 await new Promise((r) => setTimeout(r, 60));
 const w0 = await wide();
 check("history wide: list + detail + graph", w0.isWide && w0.selected.startsWith("vault backup") && w0.files === 2 && w0.dots === 5 && w0.cols === 2, JSON.stringify(w0));
-check("history narrow: no graph or detail", await page.evaluate(() => !document.querySelector("#history .light-git-graph") && getComputedStyle(document.querySelector("#history .light-git-commit-detail")).display === "none"));
+check("history narrow: graph without the detail pane", await page.evaluate(() => document.querySelectorAll("#history .light-git-commit-head .light-git-graph circle").length === 5 && getComputedStyle(document.querySelector("#history .light-git-commit-detail")).display === "none"));
+// 좁은 화면: 두 줄 행과 펼친 파일 목록 사이로 선이 끊기지 않아야 한다
+const narrowGraph = () => page.evaluate(() => {
+  const items = [...document.querySelectorAll("#history .light-git-commit")];
+  const xs = (svg, y) => [...svg.querySelectorAll("line")].filter((l) => l.getAttribute("y1") === y).map((l) => l.getAttribute("x1")).sort().join();
+  const seams = [];
+  items.forEach((item, i) => {
+    const next = items[i + 1];
+    if (!next) return;
+    const body = item.querySelector(".light-git-commit-body");
+    const open = getComputedStyle(body).display !== "none";
+    const from = open ? body.querySelector(".light-git-graph") : item.querySelector(".light-git-commit-head .light-git-graph");
+    const to = next.querySelector(".light-git-commit-head .light-git-graph");
+    const ends = [...from.querySelectorAll("line")].filter((l) => l.getAttribute("y2") === "100%").map((l) => l.getAttribute("x2"));
+    seams.push({ i, open, gap: Math.round(to.getBoundingClientRect().top - from.getBoundingClientRect().bottom), ends: [...new Set(ends)].sort().join(), next: xs(to, "0") });
+  });
+  const head = items[0].querySelector(".light-git-commit-head");
+  const svg = head.querySelector(".light-git-graph").getBoundingClientRect();
+  return {
+    seams,
+    fits: svg.height === head.getBoundingClientRect().height + 1,
+    clear: head.querySelector(".light-git-commit-msg").getBoundingClientRect().left >= svg.right,
+    filesClear: [...items[1].querySelectorAll(".light-git-file-name")].every((n) => n.getBoundingClientRect().left >= svg.right),
+  };
+});
+const seamsOk = (g) => g.seams.every((s) => Math.abs(s.gap) <= 1 && s.ends === s.next);
+await page.evaluate(() => document.querySelectorAll("#history .light-git-commit-head")[0].click()); // 맨 위 커밋 접기
+await new Promise((r) => setTimeout(r, 60));
+const g0 = await narrowGraph();
+check("history narrow: lines join across rows", g0.seams.length === 4 && g0.seams.every((s) => !s.open) && seamsOk(g0) && g0.fits && g0.clear, JSON.stringify(g0));
+await page.evaluate(() => document.querySelectorAll("#history .light-git-commit-head")[1].click()); // 머지 커밋 펼치기: 칸이 2개 지나간다
+await new Promise((r) => setTimeout(r, 60));
+const g1 = await narrowGraph();
+const openSeam = g1.seams.find((s) => s.open);
+check("history narrow: lines continue past an opened commit", openSeam?.i === 1 && openSeam.ends.split(",").length === 2 && seamsOk(g1) && g1.filesClear, JSON.stringify(g1));
 await page.evaluate(() => document.querySelector("#historyWide .light-git-list").focus());
 await press("ArrowDown");
 await new Promise((r) => setTimeout(r, 60));
