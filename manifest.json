@@ -1,7 +1,7 @@
 {
 	"id": "light-git",
 	"name": "Light Git",
-	"version": "0.1.12",
+	"version": "0.1.13",
 	"minAppVersion": "1.8.7",
 	"description": "가벼운 Git 동기화 (iOS 지원): 분할 push, 선택 커밋, IntelliJ 스타일 충돌 해결 화면.",
 	"author": "song2moon94",

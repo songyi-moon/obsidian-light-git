@@ -9,9 +9,10 @@ export const HISTORY_VIEW = "light-git-history";
 const PAGE = 50;
 /** 이 폭 이상이면 IntelliJ Log처럼 목록 | 상세로 나눈다. 좁으면 커밋을 그 자리에서 펼친다 */
 const WIDE = 640;
-const GRAPH_ROW = 24;
 const GRAPH_COL = 12;
 const GRAPH_MAX_LANES = 8;
+/** 폰에서는 메시지 자리를 지키도록 칸 수를 줄인다. 넘치는 칸은 마지막 칸에 겹쳐 그린다 */
+const GRAPH_MAX_LANES_NARROW = 4;
 
 function pad(n: number) {
 	return String(n).padStart(2, "0");
@@ -116,9 +117,12 @@ export class HistoryView extends ItemView {
 			this.detailEl.empty();
 			return;
 		}
-		// 그래프는 전체 목록과 넓은 화면에서만: 검색으로 건너뛴 커밋이 있으면 선이 이어지지 않는다
-		const graph = this.wide && !query ? commitGraph(this.commits) : null;
-		const lanes = graph ? Math.min(GRAPH_MAX_LANES, Math.max(...graph.map((g) => Math.max(g.lane, ...g.top.flat(), ...g.bottom.flat()))) + 1) : 0;
+		// 그래프는 전체 목록에서만: 검색으로 건너뛴 커밋이 있으면 선이 이어지지 않는다
+		const graph = !query ? commitGraph(this.commits) : null;
+		const maxLanes = this.wide ? GRAPH_MAX_LANES : GRAPH_MAX_LANES_NARROW;
+		const lanes = graph ? Math.min(maxLanes, Math.max(...graph.map((g) => Math.max(g.lane, ...g.top.flat(), ...g.bottom.flat()))) + 1) : 0;
+		this.listEl.toggleClass("has-graph", !!graph);
+		this.listEl.style.setProperty("--light-git-graph-width", `${lanes * GRAPH_COL + 2}px`);
 		shown.forEach((c, i) => this.commitRow(c, graph?.[i] ?? null, lanes));
 		if (this.commits.length >= this.limit && !query) {
 			const more = this.listEl.createEl("button", { cls: "light-git-more", text: "더 보기" });
@@ -143,27 +147,40 @@ export class HistoryView extends ItemView {
 		if (this.unpushed.has(c.oid)) meta.createSpan({ cls: "light-git-status-unpushed", text: "↑ push 대기 · " });
 		meta.createSpan({ text: `${c.author} · ${relativeTime(c.timestamp)} · ${c.oid.slice(0, 7)}` });
 		if (c.oid === this.selected) item.addClass("is-selected");
-		const files = item.createDiv({ cls: "light-git-commit-files" });
-		files.hide();
+		const body = item.createDiv({ cls: "light-git-commit-body" });
+		body.hide();
+		if (graph) this.drawPassing(body, graph, lanes);
+		const files = body.createDiv({ cls: "light-git-commit-files" });
 		head.onclick = async () => {
 			this.markSelected(c.oid);
 			if (this.wide) return void (await this.showDetail(c));
-			if (files.isShown()) return void files.hide();
-			files.show();
+			if (body.isShown()) return void body.hide();
+			body.show();
 			if (!files.childElementCount) await this.loadFiles(c, files);
 		};
 	}
 
-	private drawGraph(parent: HTMLElement, g: GraphRow, lanes: number) {
-		const x = (lane: number) => 7 + Math.min(lane, GRAPH_MAX_LANES - 1) * GRAPH_COL;
-		const mid = GRAPH_ROW / 2;
-		const svg = parent.createSvg("svg", { cls: "light-git-graph", attr: { width: String(lanes * GRAPH_COL + 2), height: String(GRAPH_ROW), "aria-hidden": "true" } });
-		const line = ([from, to]: [number, number], y1: number, y2: number) => {
-			svg.createSvg("line", { cls: `lane-${from % 4}`, attr: { x1: String(x(from)), y1: String(y1), x2: String(x(to)), y2: String(y2) } });
+	/** 행 높이가 줄 수에 따라 달라지므로 세로 위치는 비율로 그린다. 칸 너머(마지막 칸에 겹침)는 lanes로 자른다 */
+	private graphParts(parent: HTMLElement, lanes: number) {
+		const x = (lane: number) => String(7 + Math.min(lane, lanes - 1) * GRAPH_COL);
+		const svg = parent.createSvg("svg", { cls: "light-git-graph", attr: { width: String(lanes * GRAPH_COL + 2), "aria-hidden": "true" } });
+		const line = (color: number, from: number, to: number, y1: string, y2: string) => {
+			svg.createSvg("line", { cls: `lane-${color % 4}`, attr: { x1: x(from), y1, x2: x(to), y2 } });
 		};
-		for (const l of g.top) line(l, 0, mid);
-		for (const l of g.bottom) line(l, mid, GRAPH_ROW);
-		svg.createSvg("circle", { cls: `lane-${g.lane % 4}`, attr: { cx: String(x(g.lane)), cy: String(mid), r: "3.5" } });
+		return { svg, x, line };
+	}
+
+	private drawGraph(parent: HTMLElement, g: GraphRow, lanes: number) {
+		const { svg, x, line } = this.graphParts(parent, lanes);
+		for (const [from, to] of g.top) line(from, from, to, "0", "50%");
+		for (const [from, to] of g.bottom) line(from, from, to, "50%", "100%");
+		svg.createSvg("circle", { cls: `lane-${g.lane % 4}`, attr: { cx: x(g.lane), cy: "50%", r: "3.5" } });
+	}
+
+	/** 커밋을 펼쳤을 때 파일 목록 옆으로 다음 행까지 선을 잇는다 */
+	private drawPassing(parent: HTMLElement, g: GraphRow, lanes: number) {
+		const { line } = this.graphParts(parent, lanes);
+		for (const to of new Set(g.bottom.map(([, to]) => to))) line(to, to, to, "0", "100%");
 	}
 
 	private markSelected(oid: string) {
