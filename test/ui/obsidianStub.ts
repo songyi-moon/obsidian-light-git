@@ -50,7 +50,7 @@ document.addEventListener("keydown", (e) => {
 export class Menu {
 	items: string[] = [];
 	addItem(cb: (i: any) => unknown) {
-		const item: any = { setTitle: (t: string) => (this.items.push(t), item), setIcon: () => item, onClick: () => item };
+		const item: any = { setTitle: (t: string) => (this.items.push(t), (item.title = t), item), setIcon: () => item, onClick: (fn: () => void) => ((((window as any).__menuRun ??= {})[item.title] = fn), item) };
 		cb(item);
 		return this;
 	}

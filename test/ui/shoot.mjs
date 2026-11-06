@@ -13,14 +13,14 @@ page.on("pageerror", (e) => { console.log("PAGE ERROR", e.message); failed++; })
 await page.setViewport({ width: 1400, height: 900 });
 await page.goto(url);
 const summary = () => page.$eval(".light-git-merge-summary", (e) => e.textContent);
-check("initial summary", (await summary()) === "충돌 2변경 2남음", await summary());
+check("initial summary", (await summary()) === "충돌 2, 변경 2 남음", await summary());
 const cols = await page.$eval(".light-git-merge-row:not(.is-stable)", (e) => getComputedStyle(e).gridTemplateColumns.split(" ").length);
 check("desktop: 3 columns", cols === 3);
 await page.screenshot({ path: `${out}/merge-desktop-initial.png` });
 
 // 툴바 버튼 → 충돌 없는 변경 적용
 await page.evaluate(() => [...document.querySelectorAll(".light-git-merge-toolbar button")].find((b) => b.textContent.includes("충돌 없는")).click());
-check("apply non-conflicting", (await summary()) === "충돌 2남음", await summary());
+check("apply non-conflicting", (await summary()) === "충돌 2 남음", await summary());
 // 첫 충돌: 원격 «, 내 것 » 순서로 적용 → 둘 다 들어감
 const clickIn = (sel) => page.evaluate((s) => document.querySelector(s).click(), sel);
 await clickIn(".kind-conflict.is-pending .col-theirs .light-git-merge-gutter button");
@@ -50,7 +50,7 @@ await page.evaluate(() => [...document.querySelectorAll(".light-git-merge-toolba
 await page.evaluate(() => document.querySelector(".light-git-merge-footer button").click());
 check("close with work: asks first", (await mergeOpen()) && (await page.evaluate(() => !!document.querySelector(".light-git-confirm-text"))));
 await page.evaluate(() => document.querySelector(".light-git-confirm-text").parentElement.querySelector("button").click());
-check("close with work: cancel keeps the work", (await mergeOpen()) && !(await page.evaluate(() => document.querySelector(".light-git-confirm-text"))) && (await summary()) === "충돌 2남음", await summary());
+check("close with work: cancel keeps the work", (await mergeOpen()) && !(await page.evaluate(() => document.querySelector(".light-git-confirm-text"))) && (await summary()) === "충돌 2 남음", await summary());
 await page.evaluate(() => document.querySelector(".light-git-merge-footer button").click());
 await clickText("버리고 닫기");
 check("close with work: confirm closes", !(await mergeOpen()));
@@ -68,15 +68,15 @@ const toolbar = (t) => page.evaluate((t) => [...document.querySelectorAll(".ligh
 const confirmBtn = (t) => page.evaluate((t) => [...document.querySelector(".light-git-confirm-text").parentElement.querySelectorAll("button")].find((b) => b.textContent === t).click(), t);
 const asking = () => page.evaluate(() => !!document.querySelector(".light-git-confirm-text"));
 await toolbar("초기화");
-check("reset without work: no question", !(await asking()) && (await summary()) === "충돌 2변경 2남음", await summary());
+check("reset without work: no question", !(await asking()) && (await summary()) === "충돌 2, 변경 2 남음", await summary());
 await toolbar("충돌 없는");
 await toolbar("초기화");
-check("reset with work: asks first and keeps the work", (await asking()) && (await summary()) === "충돌 2남음", await summary());
+check("reset with work: asks first and keeps the work", (await asking()) && (await summary()) === "충돌 2 남음", await summary());
 await confirmBtn("취소");
-check("reset cancelled: work stays", !(await asking()) && (await summary()) === "충돌 2남음", await summary());
+check("reset cancelled: work stays", !(await asking()) && (await summary()) === "충돌 2 남음", await summary());
 await toolbar("초기화");
 await confirmBtn("초기화");
-check("reset confirmed: back to the start", !(await asking()) && (await summary()) === "충돌 2변경 2남음", await summary());
+check("reset confirmed: back to the start", !(await asking()) && (await summary()) === "충돌 2, 변경 2 남음", await summary());
 await page.evaluate(() => document.querySelector(".light-git-merge-footer button").click());
 
 // 파일 단위 선택: 삭제만 먼저 묻고, 내용이 있는 쪽은 바로 저장
@@ -134,6 +134,20 @@ const k3 = await pendingTops();
 check("keys: Shift+F7 goes back", k2.scroll > k1.scroll && k3.scroll === k1.scroll, JSON.stringify([k1.scroll, k2.scroll, k3.scroll]));
 check("toolbar: previous and next buttons", await page.evaluate(() => { const t = [...document.querySelectorAll(".light-git-merge-toolbar button")].map((b) => b.getAttribute("aria-label")); return t.includes("이전 미해결 (Shift+F7)") && t.includes("다음 미해결 (F7)"); }));
 await page.evaluate(() => document.querySelector(".light-git-merge-grid").scrollTop = 0);
+// 폰 툴바: 이동 버튼과 ⋯ 한 줄. 일괄 작업은 메뉴에서
+const phoneBar = await page.evaluate(() => {
+  const bar = document.querySelector(".light-git-merge-toolbar");
+  const seen = [...bar.querySelectorAll("button")].filter((b) => b.getClientRects().length > 0);
+  return { shown: seen.length, oneRow: new Set(seen.map((b) => Math.round(b.getBoundingClientRect().top))).size === 1, moreH: bar.querySelector(".light-git-merge-more").getBoundingClientRect().height };
+});
+check("mobile: toolbar is one row with a more button", phoneBar.shown === 3 && phoneBar.oneRow && phoneBar.moreH >= 34, JSON.stringify(phoneBar));
+await page.evaluate(() => document.querySelector(".light-git-merge-more").click());
+const menuItems = await page.evaluate(() => window.__menu);
+check("mobile: more menu holds the bulk actions", JSON.stringify(menuItems) === JSON.stringify(["충돌 없는 변경 모두 적용", "모두 내 것", "모두 원격", "초기화"]), JSON.stringify(menuItems));
+const beforeRun = await summary();
+await page.evaluate(() => window.__menuRun["충돌 없는 변경 모두 적용"]());
+check("mobile: menu action runs", beforeRun === "충돌 2, 변경 2 남음" && (await summary()) === "충돌 2 남음", await summary());
+await page.screenshot({ path: `${out}/merge-mobile-after.png` });
 // 태블릿: iPad 세로는 카드, 가로는 3단. 둘 다 가로 스크롤 없어야 함
 for (const [name, w, h, cols] of [["tablet portrait", 820, 1180, 1], ["tablet landscape", 1180, 820, 3]]) {
   await page.setViewport({ width: w, height: h, deviceScaleFactor: 2, isMobile: true });

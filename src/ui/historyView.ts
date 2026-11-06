@@ -144,7 +144,7 @@ export class HistoryView extends ItemView {
 		if (graph) this.drawGraph(head, graph, lanes);
 		head.createDiv({ cls: "light-git-commit-msg", text: c.message.split("\n")[0] });
 		const meta = head.createDiv({ cls: "light-git-commit-meta" });
-		if (this.unpushed.has(c.oid)) meta.createSpan({ cls: "light-git-status-unpushed", text: "↑ push 대기 · " });
+		if (this.unpushed.has(c.oid)) meta.createSpan({ cls: "light-git-commit-unpushed", text: "↑ ", attr: { "aria-label": "push 대기" } });
 		meta.createSpan({ text: `${c.author} · ${relativeTime(c.timestamp)} · ${c.oid.slice(0, 7)}` });
 		if (c.oid === this.selected) item.addClass("is-selected");
 		const body = item.createDiv({ cls: "light-git-commit-body" });

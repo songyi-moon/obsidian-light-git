@@ -213,7 +213,7 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 	private afterPull(conflicts: string[]): string {
 		if (!conflicts.length) return "pull 완료";
 		this.activateView(SOURCE_CONTROL_VIEW);
-		return `충돌 ${conflicts.length}건 — 'Git 변경 사항'에서 파일을 눌러 해결하세요:\n${conflicts.join("\n")}`;
+		return `충돌 ${conflicts.length}건. 'Git 변경 사항'에서 파일을 눌러 해결하세요:\n${conflicts.join("\n")}`;
 	}
 
 	/** 공통 실행기: 동시 실행 방지 + 상태 표시 + 에러 알림. 성공 여부를 반환. */
@@ -331,7 +331,7 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 					new Notice(`obsidian-git을 끄지 못했습니다: ${errorText(e)}\n설정 > 커뮤니티 플러그인에서 직접 끈 뒤 다시 연결하세요.`, 10000);
 					return;
 				}
-				new Notice("obsidian-git을 껐습니다. 연결을 시작합니다.");
+				new Notice("obsidian-git을 껐습니다.");
 				await doConnect();
 			},
 		).open();

@@ -259,7 +259,7 @@ export class DiffModal extends Modal {
 		const lines = newText.split("\n");
 		lines.splice(blk.n - 1, blk.add.length, ...blk.del);
 		const next = lines.join("\n");
-		new ConfirmModal(this.app, "이 변경 블록을 마지막 커밋 내용으로 되돌립니다. 되돌릴 수 없습니다.", "되돌리기", () => {
+		new ConfirmModal(this.app, "이 부분을 마지막 커밋 내용으로 바꿉니다. 취소할 수 없습니다.", "되돌리기", () => {
 			void saveNew(newText, next).then((saved) => {
 				if (!saved) return;
 				this.content = { ...this.content, newText: next };
@@ -290,7 +290,7 @@ export class DiffModal extends Modal {
 
 	/** 접힌 구간. 누르면 그 자리에서 펼친다 (전체를 다시 그리면 스크롤 위치를 잃는다) */
 	private foldRow(body: HTMLElement, blk: Extract<Block, { kind: "fold" }>, draw: (parent: HTMLElement, blocks: Block[]) => void) {
-		const fold = body.createDiv({ cls: "light-git-diff-fold", text: `··· ${blk.lines.length}줄 동일 ···` });
+		const fold = body.createDiv({ cls: "light-git-diff-fold", text: `${blk.lines.length}줄 동일` });
 		fold.onclick = () => {
 			const opened = body.createDiv();
 			fold.replaceWith(opened);

@@ -231,7 +231,7 @@ export class SourceControlView extends ItemView {
 		const staged = changes.filter((c) => c.staged);
 		this.stagedOnly = staged.length > 0 && !merging;
 		const count = this.stagedOnly ? staged.length : changes.length + conflicts.length;
-		this.messageEl.placeholder = count || merging ? `커밋 메시지 (비우면: ${this.plugin.defaultMessage(count)})` : "커밋할 변경 없음";
+		this.messageEl.placeholder = count || merging ? "커밋 메시지 (비우면 자동 작성)" : "커밋할 변경 없음";
 		this.commitBtn.setText(merging && !conflicts.length ? "머지 완료 & 동기화" : this.stagedOnly ? `${staged.length}개 커밋 & 동기화` : count ? "커밋 & 동기화" : "동기화");
 		this.hintEl.setText(conflicts.length ? `충돌 ${conflicts.length}건 남음` : merging ? "머지 커밋" : this.stagedOnly ? `${staged.length}/${changes.length} 선택` : changes.length ? `전체 ${changes.length}개` : "");
 		this.render(merging, conflicts, changes, copies);
@@ -335,7 +335,7 @@ export class SourceControlView extends ItemView {
 			body.createDiv({ cls: "light-git-hint", text: "원격에 올라가지 않습니다. 원본과 비교해 필요한 내용을 옮긴 뒤 삭제하세요. 그대로 올리려면 파일 이름을 바꾸세요." });
 			for (const p of copies) {
 				this.row(body, p, "added", null, () => this.plugin.openCopyDiff(p), () => {
-					new ConfirmModal(this.app, `${p}\n충돌 사본을 삭제합니다. 되돌릴 수 없습니다.`, "삭제", () => this.plugin.discard(p)).open();
+					new ConfirmModal(this.app, `${p}\n충돌 사본을 삭제합니다. 취소할 수 없습니다.`, "삭제", () => this.plugin.discard(p)).open();
 				});
 			}
 		}
@@ -409,8 +409,8 @@ export class SourceControlView extends ItemView {
 		if (check) {
 			// 머지 중(체크박스 없음)에는 되돌리기도 막는다
 			action("undo-2", "변경 버리기", () => {
-				const what = type === "added" ? "새 파일을 삭제" : "마지막 커밋 상태로 되돌리기";
-				new ConfirmModal(this.app, `${path}\n변경을 버립니다 (${what}). 되돌릴 수 없습니다.`, "버리기", () => this.plugin.discard(path)).open();
+				const what = type === "added" ? "새 파일을 삭제합니다" : "마지막 커밋 상태로 돌아갑니다";
+				new ConfirmModal(this.app, `${path}\n${what}. 취소할 수 없습니다.`, "버리기", () => this.plugin.discard(path)).open();
 			});
 		}
 		row.oncontextmenu = (e) => {

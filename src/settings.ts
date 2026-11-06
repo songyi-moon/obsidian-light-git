@@ -66,9 +66,9 @@ export class LightGitSettingTab extends PluginSettingTab {
 			});
 		new Setting(containerEl)
 			.setName("저장소 폴더")
-			.setDesc("vault 안의 이 폴더만 git 저장소로 씁니다 (예: notes). 비우면 vault 전체. 기기마다 다른 .obsidian 설정을 git에서 빼려면 지정하세요. 없으면 만들고, 연결하면 원격을 이 폴더로 받아옵니다.")
+			.setDesc("볼트 안의 이 폴더만 git 저장소로 씁니다 (예: notes). 비우면 볼트 전체. 기기마다 다른 .obsidian 설정을 git에서 빼려면 지정하세요. 없으면 만들고, 연결하면 원격을 이 폴더로 받아옵니다.")
 			.addText((t) =>
-				exactText(t).setPlaceholder("(vault 전체)").setValue(s.repoFolder).onChange(async (v) => {
+				exactText(t).setPlaceholder("(볼트 전체)").setValue(s.repoFolder).onChange(async (v) => {
 					s.repoFolder = v.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 					await save();
 					p.resetBackend();
@@ -81,14 +81,14 @@ export class LightGitSettingTab extends PluginSettingTab {
 			.addText((t) => exactText(t).setValue(s.username).onChange(async (v) => ((s.username = v.trim()), await save())));
 		new Setting(containerEl)
 			.setName("토큰 / 비밀번호")
-			.setDesc("Personal Access Token. 이 기기에만 저장되며 vault(=git)에 들어가지 않습니다.")
+			.setDesc("Personal Access Token. 이 기기에만 저장되고 Git에는 올라가지 않습니다.")
 			.addText((t) => {
 				t.inputEl.type = "password";
 				t.setValue(p.getToken()).onChange((v) => p.setToken(v.trim()));
 			});
 		new Setting(containerEl)
 			.setName("연결")
-			.setDesc("저장소가 없으면 만들고, 원격에 내용이 있으면 받아옵니다. (기존 vault를 처음 올릴 때도 사용) 연결 테스트는 파일을 건드리지 않고 URL과 읽기 권한만 확인합니다.")
+			.setDesc("저장소가 없으면 만들고, 원격에 내용이 있으면 받아옵니다. (기존 볼트를 처음 올릴 때도 사용) 연결 테스트는 파일을 건드리지 않고 URL과 읽기 권한만 확인합니다.")
 			.addButton((b) => b.setButtonText("연결 테스트").onClick(() => p.testConnection()))
 			.addButton((b) => b.setButtonText("원격 저장소 연결").setCta().onClick(() => p.connect()));
 

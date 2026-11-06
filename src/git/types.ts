@@ -52,6 +52,9 @@ export interface ConflictVersions {
 	theirs: string | null;
 }
 
+/** 빈 원격에 처음 올릴 때 만드는 .gitignore: 기기마다 다르고 화면을 옮길 때마다 바뀌는 파일 */
+export const DEFAULT_GITIGNORE = [".obsidian/workspace.json", ".obsidian/workspace-mobile.json", ".trash/", ".DS_Store", ""].join("\n");
+
 export interface GitConfig {
 	remoteUrl: string;
 	branch: string;
