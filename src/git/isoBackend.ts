@@ -1,7 +1,9 @@
 import * as git from "isomorphic-git";
+import { gitHttpUrl } from "./errors";
 import { fetchTreesOnly, partialFetch, type PartialFetchOptions } from "./partialFetch";
 import { applyNonConflicting, buildRegions, conflictMarkerText, mergedText } from "../merge/mergeModel";
-import { isNewConflictCopy, messageText, type CommitInfo, type CommitMessage, type ConflictVersions, type FileChange, type GitBackend, type GitConfig, type WorkChange } from "./types";
+import { sameText, SAME_TEXT_LIMIT } from "./sameText";
+import { DEFAULT_GITIGNORE, isNewConflictCopy, messageText, type CommitInfo, type CommitMessage, type ConflictVersions, type FileChange, type GitBackend, type GitConfig, type WorkChange } from "./types";
 
 /** 분할 push 때 커밋 하나를 가리키는 로컬 전용 임시 ref (원격에는 생기지 않음) */
 const TMP_REF = "light-git-push-step";
@@ -18,13 +20,6 @@ const RESUME_MSG = "이전 연결이 중간에 멈췄습니다. 설정에서 '�
 const ADD_BATCH = 200;
 /** 다른 기기 것으로 덮어쓰면 이 플러그인이 꺼지거나(플러그인 목록) 설정이 바뀌는 경로: 기기에 있으면 항상 기기 것을 둔다 */
 const KEEP_LOCAL = [".obsidian/community-plugins.json", ".obsidian/plugins/"];
-const DEFAULT_GITIGNORE = [
-	".obsidian/workspace.json",
-	".obsidian/workspace-mobile.json",
-	".trash/",
-	".DS_Store",
-	"",
-].join("\n");
 
 /** fs 메서드 중 백엔드가 직접 쓰는 것만 */
 interface Fs {
@@ -127,7 +122,7 @@ export class IsoBackend implements GitBackend {
 		const c = this.cfg();
 		return {
 			http: this.http,
-			url: c.remoteUrl,
+			url: gitHttpUrl(c.remoteUrl),
 			onAuth: () => (c.token ? { username: c.username || "git", password: c.token } : undefined),
 		};
 	}
@@ -167,21 +162,21 @@ export class IsoBackend implements GitBackend {
 			await git.init({ ...this.base, defaultBranch: branch });
 		}
 		await git.setConfig({ ...this.base, path: OWNED_KEY, value: "true" });
-		await git.addRemote({ ...this.base, remote: "origin", url: remoteUrl, force: true });
+		await git.addRemote({ ...this.base, remote: "origin", url: gitHttpUrl(remoteUrl), force: true });
 		await git.setConfig({ ...this.base, path: `branch.${branch}.remote`, value: "origin" });
 		await git.setConfig({ ...this.base, path: `branch.${branch}.merge`, value: `refs/heads/${branch}` });
 
 		const refs = await git.listServerRefs({ ...this.remote, prefix: `refs/heads/${branch}` });
 		if (!refs.some((r) => r.ref === `refs/heads/${branch}`)) {
 			if (!(await this.exists(".gitignore"))) await this.fs.writeFile(".gitignore", DEFAULT_GITIGNORE);
-			return "원격 저장소가 비어 있습니다. 동기화하면 현재 vault가 올라갑니다.";
+			return "원격 저장소가 비어 있습니다. 동기화하면 현재 볼트가 올라갑니다.";
 		}
 		// 지난번 연결이 중간에 끊겼으면 이어서 (HEAD는 이미 있어도 볼트 파일은 다 안 써졌을 수 있다)
 		const pending = await this.readCloning();
 		if (pending) return this.checkoutRemote(pending.base);
 		if (await this.headOid()) {
 			const conflicts = await this.pull();
-			return conflicts.length ? `원격과 병합 중 충돌 ${conflicts.length}건` : "원격과 병합했습니다.";
+			return conflicts.length ? `원격과 머지 중 충돌 ${conflicts.length}건` : "원격과 머지했습니다.";
 		}
 		return this.checkoutRemote(base);
 	}
@@ -440,6 +435,12 @@ export class IsoBackend implements GitBackend {
 
 	private async doChanges(): Promise<WorkChange[]> {
 		await this.finishPull();
+		const all = await this.statusChanges();
+		const same = new Set(await this.sameTextPaths(all));
+		return this.joinNormalizedNames(same.size ? all.filter((c) => !same.has(c.path)) : all);
+	}
+
+	private async statusChanges(): Promise<WorkChange[]> {
 		const matrix = await git.statusMatrix({ ...this.base });
 		const out: WorkChange[] = [];
 		// statusMatrix 값: head/workdir 0=없음 1=HEAD와 같음 2=다름, stage 0=없음 1=HEAD와 같음 2=작업 파일과 같음 3=둘 다와 다름
@@ -449,7 +450,29 @@ export class IsoBackend implements GitBackend {
 			if (!staged && !unstaged) continue;
 			out.push({ path, type: head === 0 ? "added" : workdir === 0 ? "deleted" : "modified", staged, unstaged });
 		}
-		return this.joinNormalizedNames(out);
+		return out;
+	}
+
+	/** 줄바꿈·BOM만 달라진 파일. 변경이 아니므로 목록과 커밋에서 뺀다 (sameText 참고) */
+	private async sameTextPaths(changes: WorkChange[]): Promise<string[]> {
+		const out: string[] = [];
+		for (const c of changes.filter((c) => c.type === "modified" && !c.staged).slice(0, SAME_TEXT_LIMIT)) {
+			const inHead = await this.readBlobAt("HEAD", c.path);
+			if (inHead && sameText(inHead, (await this.fs.readFile(c.path)) as Uint8Array)) out.push(c.path);
+		}
+		return out;
+	}
+
+	/** 원격이 바꾼 파일에 줄바꿈 차이만 남아 있으면 checkout이 거부한다. 내용이 같으니 커밋 상태로 되돌린다 */
+	private async restoreSameText(head: string, theirs: string): Promise<void> {
+		const same = await this.sameTextPaths(await this.statusChanges());
+		if (!same.length) return;
+		const incoming = new Set((await this.diffTrees(head, theirs)).map((c) => c.path));
+		for (const p of same) {
+			if (!incoming.has(p)) continue;
+			const blob = await this.readBlobAt("HEAD", p);
+			if (blob) await this.fs.writeFile(p, blob);
+		}
 	}
 
 	/**
@@ -770,6 +793,7 @@ export class IsoBackend implements GitBackend {
 		// 로컬이 앞서 있기만 하면(원격 새 커밋 없음) merge/checkout은 할 일이 없다 — checkout은 vault 전체를 훑으므로 비싸다
 		if (await git.isDescendent({ ...this.base, oid: head, ancestor: theirs, depth: -1 }).catch(() => false)) return [];
 		await this.assertNoOverlap(head, theirs);
+		await this.restoreSameText(head, theirs);
 		// git.merge는 브랜치를 먼저 옮기고 파일은 그 뒤에 쓴다. 그 사이에 꺼지면 아직 안 쓴 옛 파일이 '내 변경'으로 보여 다음 동기화가 원격 변경을 되돌린다.
 		await this.fs.writeFile(PULLING, JSON.stringify({ from: head, theirs, conflict: false } satisfies PullState));
 		this.pullActive = true;

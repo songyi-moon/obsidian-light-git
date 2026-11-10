@@ -41,6 +41,7 @@
 .light-git-toolbar {
 	flex: none;
 	display: flex;
+	flex-wrap: wrap; /* 좁아도 버튼이 잘려 사라지지 않게 */
 	align-items: center;
 	gap: 2px;
 	padding: 6px 8px;
@@ -48,6 +49,7 @@
 }
 .light-git-toolbar-title {
 	flex: 1;
+	white-space: nowrap;
 	font-weight: var(--font-semibold);
 	color: var(--text-normal);
 }
@@ -152,6 +154,15 @@
 .light-git-group-count {
 	color: var(--text-faint);
 	font-size: var(--font-ui-smaller);
+}
+.light-git-head-action {
+	margin-left: auto;
+	padding: 2px 4px;
+}
+.is-mobile .light-git-head-action {
+	width: 34px;
+	height: 34px;
+	padding: 0;
 }
 .light-git-group.is-conflict .light-git-group-title {
 	color: var(--text-error);
@@ -574,6 +585,12 @@ body:not(.is-mobile) .light-git-diff-line:hover .light-git-diff-revert {
 .light-git-tool-btn:hover {
 	background: var(--background-modifier-hover);
 }
+.light-git-merge-actions {
+	display: contents;
+}
+.light-git-tool-btn.light-git-merge-more {
+	display: none;
+}
 .light-git-tool-icon {
 	display: inline-flex;
 	color: var(--text-muted);
@@ -768,17 +785,6 @@ body:not(.is-mobile) .light-git-diff-line:hover .light-git-diff-revert {
 .light-git-merge-summary.is-done {
 	color: var(--color-green);
 }
-.light-git-pill {
-	padding: 0 7px;
-	border-radius: 9px;
-	font-size: var(--font-ui-smaller);
-	background: rgba(var(--color-blue-rgb), 0.15);
-	color: var(--color-blue);
-}
-.light-git-pill.is-conflict {
-	background: rgba(var(--color-red-rgb), 0.15);
-	color: var(--text-error);
-}
 .light-git-merge-footer .is-disabled {
 	opacity: 0.5;
 }
@@ -812,6 +818,13 @@ body:not(.is-mobile) .light-git-diff-line:hover .light-git-diff-revert {
 	}
 	.light-git-merge-toolbar .light-git-tool-btn span:not(.light-git-tool-icon) {
 		font-size: var(--font-ui-smaller);
+	}
+	.light-git-merge-actions {
+		display: none;
+	}
+	.light-git-tool-btn.light-git-merge-more {
+		display: inline-flex;
+		margin-left: auto;
 	}
 	.light-git-merge-row {
 		grid-template-columns: 1fr;
@@ -1024,6 +1037,9 @@ body:not(.is-mobile) .light-git-group-head {
 	margin-bottom: 4px;
 }
 /* 행 높이가 달라도 위아래 행과 선이 이어지도록 행 전체에 맞춘다. 1px은 행 사이 구분선 몫 */
+.light-git-commit-unpushed {
+	color: var(--text-muted);
+}
 .light-git-graph {
 	position: absolute;
 	top: 0;

@@ -8,7 +8,7 @@ import { CountingAdapter, MockAdapter } from "./mockAdapter";
 import { startGitServer } from "./gitServer";
 import { ObsidianFs } from "../src/git/obsidianFs";
 import { IsoBackend } from "../src/git/isoBackend";
-import { friendlyError, remoteUrlProblem } from "../src/git/errors";
+import { friendlyError, gitHttpUrl, remoteUrlProblem } from "../src/git/errors";
 import { NativeBackend } from "../src/git/nativeBackend";
 import { conflictCopyOriginal, isNewConflictCopy, type GitBackend, type GitConfig } from "../src/git/types";
 import { runMergeModelTests } from "./mergeModel.test";
@@ -409,10 +409,27 @@ async function main() {
 	const ownMsg = "커밋하지 않은 변경이 원격에서 바뀐 파일과 겹칩니다. 먼저 커밋하거나 되돌리세요: notes/network 401.md";
 	check("errors: own Korean messages and unknown errors stay as they are", fe(ownMsg).message === ownMsg && !fe(ownMsg).settings && fe("something odd").message === "something odd");
 	check("url check", remoteUrlProblem("", false) !== null && remoteUrlProblem("https://github.com/a/b.git", true) === null && remoteUrlProblem("git@github.com:a/b.git", true) !== null && remoteUrlProblem("git@github.com:a/b.git", false) === null && remoteUrlProblem("github.com/a/b", false) !== null && remoteUrlProblem("https://a b", true) !== null);
+	const urlCases: [string, string][] = [
+		["https://gitlab.co.kr/group/sub/vault", "https://gitlab.co.kr/group/sub/vault.git"],
+		["http://10.0.0.5:8080/group/vault/", "http://10.0.0.5:8080/group/vault.git"],
+		["https://github.com/a/b.git", "https://github.com/a/b.git"],
+		["https://github.com/a/b.GIT", "https://github.com/a/b.GIT"],
+		["https://dev.azure.com/org/proj/_git/vault", "https://dev.azure.com/org/proj/_git/vault"],
+		["https://git-codecommit.ap-northeast-2.amazonaws.com/v1/repos/vault", "https://git-codecommit.ap-northeast-2.amazonaws.com/v1/repos/vault"],
+		["git@gitlab.co.kr:group/vault", "git@gitlab.co.kr:group/vault"],
+		["ssh://git@gitlab.co.kr/group/vault", "ssh://git@gitlab.co.kr/group/vault"],
+		["https://gitlab.co.kr", "https://gitlab.co.kr"],
+		["https://gitlab.co.kr/", "https://gitlab.co.kr/"],
+		["", ""],
+	];
+	const urlWrong = urlCases.filter(([url, want]) => gitHttpUrl(url) !== want);
+	check("git http url: adds .git only where it belongs", urlWrong.length === 0, JSON.stringify(urlWrong));
 	const withBranch = (branch: string, repo = "vault"): (() => GitConfig) => () => ({ ...cfg("check")(), branch, remoteUrl: `${server.url}/${repo}.git` });
 	const checkDir = path.join(tmp, "check");
 	fs.mkdirSync(checkDir);
 	const isoCheck = (c: () => GitConfig) => new IsoBackend(new ObsidianFs(new MockAdapter(checkDir) as any), nodeHttp, c);
+	const noSuffix = () => ({ ...cfg("check")(), branch: "main", remoteUrl: `${server.url}/vault` });
+	check("iso: URL without .git still reaches the repo", await isoCheck(noSuffix).checkRemote());
 	const nativeCheck = (c: () => GitConfig) => new NativeBackend(checkDir, c);
 	for (const [name, make] of [["iso", isoCheck], ["native", nativeCheck]] as const) {
 		const has = await make(withBranch("main")).checkRemote();
@@ -421,6 +438,91 @@ async function main() {
 		check(`${name} checkRemote: finds branch, reports missing branch, missing repo gets a clear message`, has && !hasNot && fe(failure).message.startsWith("저장소를 찾을 수"), failure.split("\n")[0]);
 	}
 	check("checkRemote leaves the folder untouched", fs.readdirSync(checkDir).length === 0);
+
+	// 12-1. 줄바꿈·BOM만 달라진 파일: 편집기가 다시 저장해도 변경이 아니다
+	console.log("— 줄바꿈·BOM만 달라진 파일 —");
+	const eolBare = path.join(remoteRoot, "eol.git");
+	execFileSync("git", ["init", "--bare", "-b", "main", eolBare]);
+	sh(eolBare, "config", "http.receivepack", "true");
+	sh(eolBare, "config", "uploadpack.allowFilter", "true");
+	const eolSeed = path.join(tmp, "eolSeed");
+	fs.mkdirSync(eolSeed);
+	sh(eolSeed, "init", "-b", "main");
+	sh(eolSeed, "config", "core.autocrlf", "false");
+	sh(eolSeed, "config", "user.name", "seed");
+	sh(eolSeed, "config", "user.email", "seed@test");
+	const BOM = "\uFEFF";
+	write(eolSeed, "crlf.md", "a\r\nb\r\n");
+	write(eolSeed, "bom.md", BOM + "a\nb\n");
+	write(eolSeed, "real.md", "a\r\nb\r\n");
+	write(eolSeed, "remote.md", "x\r\ny\r\n");
+	write(eolSeed, "bin.dat", Buffer.from([0, 13, 10, 1]));
+	sh(eolSeed, "add", "-A");
+	sh(eolSeed, "commit", "-m", "seed");
+	sh(eolSeed, "push", eolBare, "main");
+	const eolCfg = (name: string) => () => ({ ...cfg(name)(), remoteUrl: `${server.url}/eol.git` });
+	const rewrite = (root: string) => {
+		write(root, "crlf.md", "a\nb\n");
+		write(root, "bom.md", "a\nb\n");
+		write(root, "real.md", "a \nb\n");
+		write(root, "remote.md", "x\ny\n");
+		write(root, "bin.dat", Buffer.from([0, 10, 1]));
+	};
+	const remoteEdit = (file: string, text: string) => {
+		sh(eolSeed, "pull", "-q", "--no-rebase", "--no-edit", eolBare, "main");
+		write(eolSeed, file, text);
+		sh(eolSeed, "add", "-A");
+		sh(eolSeed, "commit", "-m", `remote ${file}`);
+		sh(eolSeed, "push", eolBare, "main");
+	};
+	const names = (c: { path: string }[]) => c.map((x) => x.path).sort().join();
+	const blob = (root: string, p: string) => execFileSync("git", ["show", `HEAD:${p}`], { cwd: root });
+
+	const nativeEol = path.join(tmp, "nativeEol");
+	execFileSync("git", ["clone", "-q", eolBare, nativeEol]);
+	sh(nativeEol, "config", "user.name", "n");
+	sh(nativeEol, "config", "user.email", "n@test");
+	const N = new NativeBackend(nativeEol, eolCfg("n"));
+	rewrite(nativeEol);
+	check("native eol: git itself reports them (the bug being fixed)", ["crlf.md", "bom.md", "remote.md"].every((p) => sh(nativeEol, "status", "--porcelain").includes(p)), sh(nativeEol, "status", "--porcelain"));
+	check("native eol: only real edits and binary stay listed", names(await N.changes()) === "bin.dat,real.md", names(await N.changes()));
+	write(nativeEol, "bin.dat", Buffer.from([0, 13, 10, 1]));
+	await N.commit("real only");
+	check("native eol: commit leaves them out", blob(nativeEol, "crlf.md").includes(13) && blob(nativeEol, "bom.md")[0] === 0xef && !blob(nativeEol, "real.md").includes(13), sh(nativeEol, "show", "--name-only", "--format=", "HEAD"));
+	check("native eol: nothing left to commit", (await N.commit("again")) === 0);
+	await N.push();
+	remoteEdit("remote.md", "x\r\ny\r\nz\r\n");
+	const nPull = await N.pull();
+	check("native eol: remote edit of such a file still pulls", nPull.length === 0 && read(nativeEol, "remote.md").includes("z"), read(nativeEol, "remote.md"));
+	check("native eol: text is intact afterwards", read(nativeEol, "crlf.md").replace(/\r/g, "") === "a\nb\n" && names(await N.changes()) === "", names(await N.changes()));
+
+	const isoEolRoot = path.join(tmp, "isoEol");
+	fs.mkdirSync(isoEolRoot);
+	const I = new IsoBackend(new ObsidianFs(new MockAdapter(isoEolRoot) as any), nodeHttp, eolCfg("i"));
+	await I.connect();
+	write(isoEolRoot, "crlf.md", "a\nb\n");
+	write(isoEolRoot, "bom.md", "a\nb\n");
+	write(isoEolRoot, "remote.md", "x\ny\nz\n");
+	write(isoEolRoot, "real.md", "a  \nb\n");
+	check("iso eol: only real edits stay listed", names(await I.changes()) === "real.md", names(await I.changes()));
+	check("iso eol: commit leaves them out", (await I.commit("real only")) === 1 && names(await I.changes()) === "");
+	await I.push();
+	remoteEdit("crlf.md", "a\r\nb\r\nc\r\n");
+	const iPull = await I.pull();
+	check("iso eol: remote edit of such a file still pulls, no conflict copy", iPull.length === 0 && read(isoEolRoot, "crlf.md").includes("c") && !fs.readdirSync(isoEolRoot).some((f) => f.includes("충돌")), JSON.stringify(fs.readdirSync(isoEolRoot)));
+
+	// 빈 원격: PC에서 처음 올려도 화면 상태 파일이 목록을 채우지 않는다 (사용자가 만든 .gitignore는 그대로)
+	const emptyBare = path.join(remoteRoot, "emptyIgnore.git");
+	execFileSync("git", ["init", "--bare", "-b", "main", emptyBare]);
+	const emptyCfg = () => ({ ...cfg("n")(), remoteUrl: `${server.url}/emptyIgnore.git` });
+	const ig1 = path.join(tmp, "ignore1");
+	write(ig1, ".obsidian/workspace.json", "{}");
+	await new NativeBackend(ig1, emptyCfg).connect();
+	check("native empty remote: default .gitignore hides workspace.json", read(ig1, ".gitignore").includes(".obsidian/workspace.json") && !names(await new NativeBackend(ig1, emptyCfg).changes()).includes("workspace"));
+	const ig2 = path.join(tmp, "ignore2");
+	write(ig2, ".gitignore", "mine\n");
+	await new NativeBackend(ig2, emptyCfg).connect();
+	check("native empty remote: existing .gitignore is kept", read(ig2, ".gitignore") === "mine\n");
 
 	// 13. 저장소 폴더: vault의 하위 폴더에 clone → 기기별 .obsidian은 git에 안 잡힘
 	const vaultD = path.join(tmp, "vaultD");

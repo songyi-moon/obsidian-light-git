@@ -1,4 +1,4 @@
-import { App, Modal, Notice, setIcon } from "obsidian";
+import { App, Menu, Modal, Notice, setIcon } from "obsidian";
 import type { ConflictVersions } from "../git/types";
 import { ConfirmModal } from "../ui/confirmModal";
 import { isBinary } from "../ui/diffModal";
@@ -62,7 +62,7 @@ export class MergeModal extends Modal {
 	onOpen() {
 		this.modalEl.addClass("light-git-merge-modal");
 		this.contentEl.addClass("light-git-merge-body");
-		this.setTitle(`충돌 해결 — ${this.path}`);
+		this.setTitle(`충돌 해결: ${this.path}`);
 		const { ours, theirs, base } = this.versions;
 		if (ours === null || theirs === null || isBinary(ours) || isBinary(theirs)) {
 			this.renderWholeFileChoice();
@@ -71,9 +71,9 @@ export class MergeModal extends Modal {
 		this.regions = buildRegions(base ?? "", ours, theirs);
 		this.renderToolbar();
 		const header = this.contentEl.createDiv({ cls: "light-git-merge-header" });
-		header.createDiv({ text: "내 것 (Local)" });
+		header.createDiv({ text: "내 것" });
 		header.createDiv({ text: "결과" });
-		header.createDiv({ text: "원격 (Remote)" });
+		header.createDiv({ text: "원격" });
 		this.gridEl = this.contentEl.createDiv({ cls: "light-git-merge-grid" });
 		this.renderFooter();
 		this.renderGrid();
@@ -105,7 +105,7 @@ export class MergeModal extends Modal {
 	private resetAll() {
 		const run = () => this.mutate(() => this.regions.forEach(reset));
 		if (!this.hasWork()) return run();
-		new ConfirmModal(this.app, "처리한 내용과 직접 고친 내용을 모두 지웁니다. 되돌릴 수 없습니다.", "초기화", run).open();
+		new ConfirmModal(this.app, "처리한 내용과 직접 고친 내용을 모두 지웁니다. 취소할 수 없습니다.", "초기화", run).open();
 	}
 
 	/** 한쪽이 삭제했거나 바이너리인 경우: 파일 단위로 고른다 */
@@ -114,7 +114,7 @@ export class MergeModal extends Modal {
 		const box = this.contentEl.createDiv({ cls: "light-git-merge-choice" });
 		const describe = (v: string | null) => (v === null ? "삭제함" : isBinary(v) ? "바이너리 파일" : `${v.split("\n").length}줄`);
 		box.createEl("p", { text: `내 것: ${describe(ours)} · 원격: ${describe(theirs)}` });
-		box.createEl("p", { cls: "setting-item-description", text: "줄 단위 병합이 불가능해서 파일 전체를 한쪽으로 선택합니다." });
+		box.createEl("p", { cls: "setting-item-description", text: "줄 단위로 합칠 수 없습니다. 둘 중 하나를 고르세요." });
 		const row = box.createDiv({ cls: "light-git-merge-choice-buttons" });
 		const choose = (label: string, content: string | null) => {
 			const btn = row.createEl("button", { text: label });
@@ -129,21 +129,32 @@ export class MergeModal extends Modal {
 
 	private renderToolbar() {
 		const bar = this.contentEl.createDiv({ cls: "light-git-merge-toolbar" });
-		const btn = (icon: string, text: string, onClick: () => void, key = "") => {
-			const b = bar.createEl("button", { cls: "light-git-tool-btn", attr: key ? { "aria-label": `${text} (${key})` } : {} });
+		const btn = (parent: HTMLElement, icon: string, text: string, onClick: () => void, key = "") => {
+			const b = parent.createEl("button", { cls: "light-git-tool-btn", attr: key ? { "aria-label": `${text} (${key})` } : {} });
 			setIcon(b.createSpan({ cls: "light-git-tool-icon" }), icon);
 			b.createSpan({ text });
 			b.onclick = onClick;
 		};
-		btn("arrow-up", "이전 미해결", () => this.scrollToPending(-1), "Shift+F7");
-		btn("arrow-down", "다음 미해결", () => this.scrollToPending(1), "F7");
-		bar.createDiv({ cls: "light-git-toolbar-sep" });
-		btn("wand", "충돌 없는 변경 모두 적용", () => this.mutate(() => applyNonConflicting(this.regions)));
-		bar.createDiv({ cls: "light-git-toolbar-sep" });
-		btn("chevrons-right", "모두 내 것", () => this.mutate(() => acceptAll(this.regions, "ours")));
-		btn("chevrons-left", "모두 원격", () => this.mutate(() => acceptAll(this.regions, "theirs")));
-		bar.createDiv({ cls: "light-git-toolbar-sep" });
-		btn("rotate-ccw", "초기화", () => this.resetAll());
+		btn(bar, "arrow-up", "이전 미해결", () => this.scrollToPending(-1), "Shift+F7");
+		btn(bar, "arrow-down", "다음 미해결", () => this.scrollToPending(1), "F7");
+		// 좁은 화면에서는 일괄 작업을 ⋯ 메뉴로 넣어 툴바를 한 줄로 유지한다 (CSS가 900px에서 전환)
+		const actions: [string, string, () => void][] = [
+			["check", "충돌 없는 변경 모두 적용", () => this.mutate(() => applyNonConflicting(this.regions))],
+			["chevrons-right", "모두 내 것", () => this.mutate(() => acceptAll(this.regions, "ours"))],
+			["chevrons-left", "모두 원격", () => this.mutate(() => acceptAll(this.regions, "theirs"))],
+			["rotate-ccw", "초기화", () => this.resetAll()],
+		];
+		const wide = bar.createDiv({ cls: "light-git-merge-actions" });
+		actions.forEach(([icon, text, run], i) => {
+			if (i !== 2) wide.createDiv({ cls: "light-git-toolbar-sep" });
+			btn(wide, icon, text, run);
+		});
+		const more = bar.createEl("button", { cls: "light-git-tool-btn light-git-merge-more", text: "⋯", attr: { "aria-label": "더 보기" } });
+		more.onclick = (e) => {
+			const menu = new Menu();
+			for (const [icon, text, run] of actions) menu.addItem((item) => item.setTitle(text).setIcon(icon).onClick(run));
+			menu.showAtMouseEvent(e);
+		};
 	}
 
 	private renderFooter() {
@@ -158,7 +169,7 @@ export class MergeModal extends Modal {
 	/** 지금 보이는 위치 아래(위)의 미해결 영역으로. 더 없으면 반대쪽 끝으로 돌아간다 */
 	private scrollToPending(dir: 1 | -1) {
 		const rows = Array.from(this.gridEl.querySelectorAll<HTMLElement>(".light-git-merge-row.is-pending"));
-		if (!rows.length) return void new Notice("처리할 영역이 남아 있지 않습니다.");
+		if (!rows.length) return void new Notice("남은 충돌이 없습니다.");
 		const top = this.gridEl.getBoundingClientRect().top;
 		const rowTop = (r: HTMLElement) => r.getBoundingClientRect().top;
 		const next = dir > 0 ? (rows.find((r) => rowTop(r) > top + 4) ?? rows[0]) : ([...rows].reverse().find((r) => rowTop(r) < top - 4) ?? rows[rows.length - 1]);
@@ -173,13 +184,8 @@ export class MergeModal extends Modal {
 	private updateSummary() {
 		const { conflicts, changes } = unresolvedCount(this.regions);
 		const done = conflicts + changes === 0;
-		this.summaryEl.empty();
-		if (done) this.summaryEl.setText("모든 변경을 처리했습니다");
-		else {
-			if (conflicts) this.summaryEl.createSpan({ cls: "light-git-pill is-conflict", text: `충돌 ${conflicts}` });
-			if (changes) this.summaryEl.createSpan({ cls: "light-git-pill", text: `변경 ${changes}` });
-			this.summaryEl.createSpan({ text: "남음" });
-		}
+		const left = [conflicts ? `충돌 ${conflicts}` : "", changes ? `변경 ${changes}` : ""].filter(Boolean).join(", ");
+		this.summaryEl.setText(done ? "모든 변경을 처리했습니다" : `${left} 남음`);
 		this.summaryEl.toggleClass("is-done", done);
 		this.saveBtn.toggleClass("is-disabled", !done);
 	}
@@ -267,7 +273,7 @@ export class MergeModal extends Modal {
 		const mid = row.createDiv({ cls: `light-git-merge-cell col-result change-${resolved ? "none" : r.kind === "conflict" ? "conflict" : "modified"}` });
 		mid.dataset.label = r.kind === "same" ? "결과 (양쪽 동일 변경)" : "결과";
 		const midBody = mid.createDiv({ cls: "light-git-merge-side" });
-		const ta = midBody.createEl("textarea", { cls: "light-git-merge-result", attr: { placeholder: "(빈 영역)", spellcheck: "false" } });
+		const ta = midBody.createEl("textarea", { cls: "light-git-merge-result", attr: { placeholder: "(내용 없음)", spellcheck: "false" } });
 		const current = regionResult(r);
 		ta.value = current.join("\n");
 		ta.rows = Math.max(1, current.length);
@@ -279,7 +285,7 @@ export class MergeModal extends Modal {
 			this.updateSummary();
 		});
 		if (r.handled.length || r.edited) {
-			const undo = midBody.createEl("button", { cls: "light-git-gutter-btn light-git-merge-reset", attr: { "aria-label": "이 영역 되돌리기" } });
+			const undo = midBody.createEl("button", { cls: "light-git-gutter-btn light-git-merge-reset", attr: { "aria-label": "되돌리기" } });
 			setIcon(undo, "rotate-ccw");
 			undo.onclick = () => this.mutate(() => reset(r));
 		}
@@ -290,7 +296,7 @@ export class MergeModal extends Modal {
 	private trySave() {
 		const { conflicts, changes } = unresolvedCount(this.regions);
 		if (conflicts + changes > 0) {
-			new Notice(`아직 처리하지 않은 영역이 있습니다 (충돌 ${conflicts}, 변경 ${changes}). 적용하거나 무시하세요.`);
+			new Notice(`아직 처리하지 않은 변경이 있습니다 (충돌 ${conflicts}, 변경 ${changes}). 적용하거나 무시하세요.`);
 			return;
 		}
 		this.save(mergedText(this.regions));

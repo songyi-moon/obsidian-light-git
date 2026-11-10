@@ -65,10 +65,20 @@ export function startGitServer(projectRoot: string): Promise<{ url: string; clos
 			cgi.stdin.end(body);
 		});
 	});
+	// 작업 사이가 벌어지면 Node가 쉬는 연결을 먼저 끊고, 클라이언트가 그 연결을 다시 쓰다 ECONNRESET이 난다
+	server.keepAliveTimeout = 0;
+	server.requestTimeout = 0;
 	return new Promise((resolve) => {
 		server.listen(0, "127.0.0.1", () => {
 			const port = (server.address() as any).port;
-			resolve({ url: `http://127.0.0.1:${port}`, close: () => server.close(), requests });
+			resolve({
+				url: `http://127.0.0.1:${port}`,
+				close: () => {
+					server.close();
+					server.closeAllConnections();
+				},
+				requests,
+			});
 		});
 	});
 }

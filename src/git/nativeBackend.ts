@@ -1,4 +1,5 @@
-import { isNewConflictCopy, messageText, type ChangeType, type CommitInfo, type CommitMessage, type ConflictVersions, type FileChange, type GitBackend, type GitConfig, type WorkChange } from "./types";
+import { sameText, SAME_TEXT_LIMIT } from "./sameText";
+import { DEFAULT_GITIGNORE, isNewConflictCopy, messageText, type ChangeType, type CommitInfo, type CommitMessage, type ConflictVersions, type FileChange, type GitBackend, type GitConfig, type WorkChange } from "./types";
 
 interface RunResult {
 	code: number;
@@ -70,17 +71,54 @@ export class NativeBackend implements GitBackend {
 		else await this.git("remote", "add", "origin", remoteUrl);
 
 		const ls = await this.git("ls-remote", "--heads", "origin", branch);
-		if (!ls.trim()) return "원격 저장소가 비어 있습니다. 동기화하면 현재 vault가 올라갑니다.";
+		if (!ls.trim()) {
+			await this.writeDefaultGitignore();
+			return "원격 저장소가 비어 있습니다. 동기화하면 현재 볼트가 올라갑니다.";
+		}
 		if (await this.hasHead()) {
 			const conflicts = await this.pull();
-			return conflicts.length ? `원격과 병합 중 충돌 ${conflicts.length}건` : "원격과 병합했습니다.";
+			return conflicts.length ? `원격과 머지 중 충돌 ${conflicts.length}건` : "원격과 머지했습니다.";
 		}
 		await this.git("fetch", "origin", branch);
 		await this.git("checkout", "-f", "-B", branch, "--track", `origin/${branch}`);
 		return "원격 저장소를 받아왔습니다.";
 	}
 
+	private async writeDefaultGitignore() {
+		const { promises: fs } = require("fs") as typeof import("fs");
+		const file = require("path").join(this.cwd, ".gitignore") as string;
+		await fs.writeFile(file, DEFAULT_GITIGNORE, { flag: "wx" }).catch((e: NodeJS.ErrnoException) => {
+			if (e.code !== "EEXIST") throw e;
+		});
+	}
+
+	/** git blob을 바이트 그대로 읽는다 (문자열로 바꾸면 바이너리 비교가 틀어진다) */
+	private headBytes(path: string): Promise<Buffer | null> {
+		const { execFile } = require("child_process") as typeof import("child_process");
+		return new Promise((resolve) => {
+			execFile(this.gitPath, ["show", `HEAD:${path}`], { cwd: this.cwd, encoding: "buffer", maxBuffer: 256 * 1024 * 1024 }, (err, stdout) => resolve(err ? null : stdout));
+		});
+	}
+
+	/** 줄바꿈·BOM만 달라진 파일 (sameText 참고) */
+	private async sameTextPaths(changes: WorkChange[]): Promise<string[]> {
+		const { promises: fs } = require("fs") as typeof import("fs");
+		const out: string[] = [];
+		for (const c of changes.filter((c) => c.type === "modified" && !c.staged).slice(0, SAME_TEXT_LIMIT)) {
+			const head = await this.headBytes(c.path);
+			const work = head && (await fs.readFile(require("path").join(this.cwd, c.path) as string).catch(() => null));
+			if (head && work && sameText(head, work)) out.push(c.path);
+		}
+		return out;
+	}
+
 	async changes(): Promise<WorkChange[]> {
+		const all = await this.statusChanges();
+		const same = new Set(await this.sameTextPaths(all));
+		return same.size ? all.filter((c) => !same.has(c.path)) : all;
+	}
+
+	private async statusChanges(): Promise<WorkChange[]> {
 		const out = await this.git("status", "--porcelain=v1", "-z", "-uall");
 		const parts = out.split("\0");
 		const res: WorkChange[] = [];
@@ -173,7 +211,11 @@ export class NativeBackend implements GitBackend {
 		const unresolved = await this.conflicts();
 		if (unresolved.length) throw new Error(`해결되지 않은 충돌 ${unresolved.length}건이 있습니다.`);
 		const merging = await this.isMerging();
-		if (!stagedOnly || merging) await this.git("add", "-A");
+		if (!stagedOnly || merging) {
+			const same = merging ? [] : await this.sameTextPaths(await this.statusChanges());
+			await this.git("add", "-A");
+			if (same.length) await this.git("reset", "-q", "--", ...same);
+		}
 		await this.unstage((await this.changes()).filter((c) => c.staged && isNewConflictCopy(c)).map((c) => c.path));
 		const staged = await this.run(["diff", "--cached", "--quiet"]);
 		if (staged.code === 0 && !merging) return 0;
@@ -192,10 +234,21 @@ export class NativeBackend implements GitBackend {
 			return [];
 		}
 		// ls-remote로 미리 확인하지 않고 바로 pull (네트워크 왕복 1회 절약). 원격 브랜치가 아직 없으면 할 일 없음.
-		const r = await this.run([...this.author(), "pull", "--no-rebase", "--no-edit", "origin", branch]);
+		const pull = () => this.run([...this.author(), "pull", "--no-rebase", "--no-edit", "origin", branch]);
+		let r = await pull();
 		if (r.code === 0) return [];
-		const conflicts = await this.conflicts();
+		let conflicts = await this.conflicts();
 		if (conflicts.length) return conflicts;
+		// 줄바꿈만 달라진 파일을 원격이 바꿨으면 git이 pull을 거부한다. 내용이 같으니 커밋 상태로 되돌리고 다시 받는다
+		const incoming = new Set((await this.run(["diff", "--name-only", "-z", "HEAD", "FETCH_HEAD"])).stdout.split("\0"));
+		const blocked = (await this.sameTextPaths(await this.statusChanges())).filter((p) => incoming.has(p));
+		if (blocked.length) {
+			await this.git("checkout", "HEAD", "--", ...blocked);
+			r = await pull();
+			if (r.code === 0) return [];
+			conflicts = await this.conflicts();
+			if (conflicts.length) return conflicts;
+		}
 		// 실패 원인이 '원격 브랜치 없음'인지는 실패했을 때만 확인 (git 메시지는 언어 설정에 따라 달라서 문자열로 판단하지 않음)
 		if (!(await this.git("ls-remote", "--heads", "origin", branch)).trim()) return [];
 		throw new Error(r.stderr.trim() || "pull 실패");

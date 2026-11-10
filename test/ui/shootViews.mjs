@@ -48,7 +48,7 @@ console.log(JSON.stringify(info));
 check("merging: conflict + changes, no checkboxes/discard", JSON.stringify(info.merging.map((g) => [g.title, g.files, g.head, g.rows.length, g.discard])) === JSON.stringify([["충돌 1", 1, null, 0, 0], ["머지됨 3", 3, null, 0, 0]]));
 check("staging: one list with checkboxes (all/some/none)", JSON.stringify(info.staging.map((g) => [g.title, g.files, g.head, g.rows])) === JSON.stringify([["변경 4", 4, "some", ["all", "some", "none", "none"]]]));
 check("commit button / hint show selection", info.btnStaging === "2개 커밋 & 동기화" && info.btnMerging === "커밋 & 동기화" && info.hint === "2/4 선택", `${info.btnStaging} | ${info.hint}`);
-check("placeholder counts selected files", info.placeholder.includes("(desktop) 2개"), info.placeholder);
+check("placeholder says an empty message is filled in", info.placeholder === "커밋 메시지 (비우면 자동 작성)", info.placeholder);
 check("commit box pinned to bottom", info.commitBoxAtBottom);
 check("history", info.commits === 5 && info.historyFiles === 2, JSON.stringify([info.commits, info.historyFiles]));
 const mergeUi = await page.evaluate(() => {
@@ -77,7 +77,7 @@ const clean = await page.evaluate(() => [document.querySelector("#clean .light-g
 check("no changes: button is plain sync", clean[0] === "동기화" && clean[1] === "커밋할 변경 없음", JSON.stringify(clean));
 
 // History: 아직 올리지 않은 커밋만 표시
-const marks = await page.evaluate(() => [...document.querySelectorAll("#history .light-git-commit-meta")].map((m) => m.textContent.includes("push 대기")));
+const marks = await page.evaluate(() => [...document.querySelectorAll("#history .light-git-commit-meta")].map((m) => !!m.querySelector('.light-git-commit-unpushed[aria-label="push 대기"]')));
 check("history marks unpushed commits", JSON.stringify(marks) === "[true,false,false,false,false]", JSON.stringify(marks));
 
 // 파일이 많으면 폴더별로 묶고 검색칸을 보여준다
@@ -155,7 +155,7 @@ const copies = await page.evaluate(() => {
     placeholder: document.querySelector("#copies .light-git-message").placeholder,
   };
 });
-check("copies: own group, excluded from commit count", JSON.stringify(copies.titles) === JSON.stringify(["변경 1", "충돌 사본 1"]) && copies.hint === "전체 1개" && copies.checks === 0 && copies.undo === 0 && copies.placeholder.includes("(desktop) 1개"), JSON.stringify(copies));
+check("copies: own group, excluded from commit count", JSON.stringify(copies.titles) === JSON.stringify(["변경 1", "충돌 사본 1"]) && copies.hint === "전체 1개" && copies.checks === 0 && copies.undo === 0, JSON.stringify(copies));
 await page.evaluate(() => {
   const row = [...document.querySelectorAll("#copies .light-git-group")][1].querySelector(".light-git-file");
   row.click();
@@ -287,12 +287,12 @@ const foldCheck = () => page.evaluate(() => {
 await page.evaluate(() => document.querySelectorAll(".modal-container > .modal").forEach((m) => m.remove()));
 await page.evaluate(() => window.openLongDiff());
 const foldUnified = await foldCheck();
-check("diff fold opens in unified view", foldUnified.text === "··· 22줄 동일 ···" && foldUnified.left === 0 && foldUnified.codes === 1 && foldUnified.max === 30, JSON.stringify(foldUnified));
+check("diff fold opens in unified view", foldUnified.text === "22줄 동일" && foldUnified.left === 0 && foldUnified.codes === 1 && foldUnified.max === 30, JSON.stringify(foldUnified));
 const order = await page.evaluate(() => [...document.querySelectorAll(".modal .light-git-diff-line")].map((l) => l.querySelector(".light-git-code").textContent).slice(4, 9));
 check("diff fold keeps lines in place", JSON.stringify(order) === JSON.stringify(["줄 4", "줄 5", "줄 6", "줄 7", "줄 8"]), JSON.stringify(order));
 await page.evaluate(() => [...document.querySelectorAll(".modal .light-git-diff-modes button")][0].click());
 const foldSide = await foldCheck();
-check("diff fold opens in side view", foldSide.text === "··· 22줄 동일 ···" && foldSide.left === 0 && foldSide.codes === 2 && foldSide.max === 30, JSON.stringify(foldSide));
+check("diff fold opens in side view", foldSide.text === "22줄 동일" && foldSide.left === 0 && foldSide.codes === 2 && foldSide.max === 30, JSON.stringify(foldSide));
 
 // 설정: 대소문자가 중요한 칸은 iOS 자동 수정을 끈다
 const inputs = await page.evaluate(() => window.__settingInputs().map((i) => [i.type, i.getAttribute("autocapitalize"), i.getAttribute("autocorrect"), i.spellcheck]));
@@ -427,6 +427,19 @@ const menuItems = await page.evaluate(() => {
   return window.__menu;
 });
 check("context menu: same actions as the row", JSON.stringify(menuItems) === JSON.stringify(["차이 보기", "파일 열기", "변경 버리기"]), JSON.stringify(menuItems));
+// 체크한 파일 한꺼번에 버리기: 머리글 버튼 → 확인 → 체크한 파일만
+const pickBtn = await page.evaluate(() => {
+  const has = (id) => !!document.querySelector(`#${id} .light-git-group-head [aria-label="선택한 변경 버리기"]`);
+  const checked = [...document.querySelectorAll("#staging .light-git-file")].filter((r) => { const c = r.querySelector("input"); return c && (c.checked || c.indeterminate); }).map((r) => r.getAttribute("aria-label"));
+  return { staging: has("staging"), clean: has("clean"), merging: has("merging"), checked };
+});
+check("discard picked: button only when files are checked", pickBtn.staging && !pickBtn.clean && !pickBtn.merging && pickBtn.checked.length > 0, JSON.stringify(pickBtn));
+await page.evaluate(() => { window.__calls.length = 0; document.querySelector('#staging [aria-label="선택한 변경 버리기"]').click(); });
+const pickAsk = await page.evaluate(() => [...document.querySelectorAll(".light-git-confirm-text")].at(-1)?.textContent ?? "");
+const pickNoCall = await page.evaluate(() => window.__calls.length === 0);
+await page.evaluate(() => [...document.querySelectorAll(".modal button")].filter((b) => b.textContent === "버리기").at(-1).click());
+const pickCalls = await page.evaluate(() => JSON.stringify(window.__calls));
+check("discard picked: asks with the count first, then discards only checked files", pickNoCall && pickAsk.includes(`선택한 ${pickBtn.checked.length}개`) && pickCalls === JSON.stringify([["discardAll", pickBtn.checked]]), pickAsk.split("\n")[0] + " " + pickCalls);
 await page.evaluate(() => document.querySelector('#staging [aria-label="폴더별로 묶기"]').click());
 check("group toggle: folders on demand", await page.evaluate(() => document.querySelectorAll("#staging .is-folder").length === 3 && document.querySelector('#staging [aria-label="폴더별로 묶기"]').classList.contains("is-active")));
 await page.evaluate(() => document.querySelector('#staging [aria-label="폴더별로 묶기"]').click());
@@ -439,6 +452,21 @@ check("commit only: off with no changes", await page.evaluate(() => document.que
 check("commit only: off while conflicts remain", await page.evaluate(() => document.querySelector("#merging .light-git-commit-only").disabled));
 check("toolbar buttons work from the keyboard", await page.evaluate(() => { const b = document.querySelector('#staging [aria-label="Pull"]'); return b.getAttribute("role") === "button" && b.tabIndex === 0; }));
 check("branch shown in the toolbar", (await page.evaluate(() => document.querySelector("#staging .light-git-branch").textContent.trim())) === "main");
+
+// 좁은 사이드바에서도 Pull·Push가 잘리지 않는다
+const narrowBar = await page.evaluate(() => {
+  const pane = document.querySelector("#staging");
+  const width = pane.style.width;
+  const measure = (w) => {
+    pane.style.width = w + "px";
+    const right = pane.getBoundingClientRect().right;
+    return ["Pull", "Push", "History"].every((n) => pane.querySelector(`[aria-label="${n}"]`).getBoundingClientRect().right <= right + 0.5);
+  };
+  const out = { w260: measure(260), w200: measure(200), w150: measure(150) };
+  pane.style.width = width;
+  return out;
+});
+check("toolbar: Pull and Push stay visible in a narrow sidebar", narrowBar.w260 && narrowBar.w200 && narrowBar.w150, JSON.stringify(narrowBar));
 
 // History: 넓으면 목록 | 상세 + 그래프
 const wide = () => page.evaluate(() => {

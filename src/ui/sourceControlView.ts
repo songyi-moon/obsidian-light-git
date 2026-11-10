@@ -76,8 +76,9 @@ export class SourceControlView extends ItemView {
 			return b;
 		};
 		tool("refresh-cw", "새로고침", () => this.refresh());
-		tool("arrow-down-to-line", "Pull", () => this.plugin.pullCommand());
-		tool("arrow-up-from-line", "Push", () => this.plugin.pushCommand());
+		// arrow-down-to-line 등은 Obsidian 1.4.x에 없어 빈칸이 된다. 오래된 버전에도 있는 아이콘만 쓴다
+		tool("arrow-down", "Pull", () => this.plugin.pullCommand());
+		tool("arrow-up", "Push", () => this.plugin.pushCommand());
 		tool("history", "History", () => this.plugin.activateHistory(), "");
 		this.groupBtn = tool(
 			"folder-tree",
@@ -178,7 +179,10 @@ export class SourceControlView extends ItemView {
 			const head = row.closest(".light-git-group")?.querySelector<HTMLElement>(".light-git-group-head");
 			if (head) this.select(head);
 		} else if (e.key === "F4") action("파일 열기");
-		else if (mod && e.altKey && e.code === "KeyZ") action("변경 버리기");
+		else if (mod && e.altKey && e.code === "KeyZ") {
+			if (isHead) row.querySelector<HTMLElement>(".light-git-head-action")?.click();
+			else action("변경 버리기");
+		}
 		else return;
 		e.preventDefault();
 		e.stopPropagation();
@@ -231,7 +235,7 @@ export class SourceControlView extends ItemView {
 		const staged = changes.filter((c) => c.staged);
 		this.stagedOnly = staged.length > 0 && !merging;
 		const count = this.stagedOnly ? staged.length : changes.length + conflicts.length;
-		this.messageEl.placeholder = count || merging ? `커밋 메시지 (비우면: ${this.plugin.defaultMessage(count)})` : "커밋할 변경 없음";
+		this.messageEl.placeholder = count || merging ? "커밋 메시지 (비우면 자동 작성)" : "커밋할 변경 없음";
 		this.commitBtn.setText(merging && !conflicts.length ? "머지 완료 & 동기화" : this.stagedOnly ? `${staged.length}개 커밋 & 동기화` : count ? "커밋 & 동기화" : "동기화");
 		this.hintEl.setText(conflicts.length ? `충돌 ${conflicts.length}건 남음` : merging ? "머지 커밋" : this.stagedOnly ? `${staged.length}/${changes.length} 선택` : changes.length ? `전체 ${changes.length}개` : "");
 		this.render(merging, conflicts, changes, copies);
@@ -308,6 +312,8 @@ export class SourceControlView extends ItemView {
 			return merging || !files.length ? null : staged.length === files.length ? "all" : staged.length ? "some" : "none";
 		};
 		const g = this.group("changes", merging ? "머지됨" : "변경", query ? `${shown.length}/${changes.length}` : changes.length, "", groupCheck(shown), (on) => this.toggle(shown.map((c) => c.path), on));
+		const picked = merging ? [] : shown.filter((c) => c.staged);
+		if (picked.length) this.discardPickedButton(g, picked);
 		if (!shown.length && query) g.createDiv({ cls: "light-git-empty", text: "검색 결과 없음" });
 		else if (!changes.length && !merging) g.createDiv({ cls: "light-git-empty", text: "변경 사항 없음" });
 		// Diff 창에서 F7로 파일 사이를 오가는 순서 = 화면 순서
@@ -335,12 +341,27 @@ export class SourceControlView extends ItemView {
 			body.createDiv({ cls: "light-git-hint", text: "원격에 올라가지 않습니다. 원본과 비교해 필요한 내용을 옮긴 뒤 삭제하세요. 그대로 올리려면 파일 이름을 바꾸세요." });
 			for (const p of copies) {
 				this.row(body, p, "added", null, () => this.plugin.openCopyDiff(p), () => {
-					new ConfirmModal(this.app, `${p}\n충돌 사본을 삭제합니다. 되돌릴 수 없습니다.`, "삭제", () => this.plugin.discard(p)).open();
+					new ConfirmModal(this.app, `${p}\n충돌 사본을 삭제합니다. 취소할 수 없습니다.`, "삭제", () => this.plugin.discard(p)).open();
 				});
 			}
 		}
 		this.markSelected();
 		this.listEl.scrollTop = scrollTop;
+	}
+
+	/** 체크한 파일의 변경을 한 번에 버리는 머리글 버튼. 검색으로 가려진 파일은 건드리지 않는다 */
+	private discardPickedButton(body: HTMLElement, picked: WorkChange[]) {
+		const head = body.parentElement?.querySelector<HTMLElement>(".light-git-group-head");
+		if (!head) return;
+		const b = head.createDiv({ cls: "clickable-icon light-git-icon light-git-head-action light-git-busy-off", attr: { "aria-label": "선택한 변경 버리기" } });
+		setIcon(b, "undo-2");
+		b.onclick = (e) => {
+			e.stopPropagation();
+			const names = picked.slice(0, 5).map((c) => c.path).join("\n") + (picked.length > 5 ? `\n외 ${picked.length - 5}개` : "");
+			const added = picked.filter((c) => c.type === "added").length;
+			const text = `선택한 ${picked.length}개 파일을 마지막 커밋 상태로 되돌립니다.${added ? ` 새 파일 ${added}개는 삭제됩니다.` : ""} 취소할 수 없습니다.\n\n${names}`;
+			new ConfirmModal(this.app, text, "버리기", () => this.plugin.discardAll(picked.map((c) => c.path))).open();
+		};
 	}
 
 	/** 접을 수 있는 그룹 헤더. check가 있으면 '전체 선택' 체크박스 */
@@ -409,8 +430,8 @@ export class SourceControlView extends ItemView {
 		if (check) {
 			// 머지 중(체크박스 없음)에는 되돌리기도 막는다
 			action("undo-2", "변경 버리기", () => {
-				const what = type === "added" ? "새 파일을 삭제" : "마지막 커밋 상태로 되돌리기";
-				new ConfirmModal(this.app, `${path}\n변경을 버립니다 (${what}). 되돌릴 수 없습니다.`, "버리기", () => this.plugin.discard(path)).open();
+				const what = type === "added" ? "새 파일을 삭제합니다" : "마지막 커밋 상태로 돌아갑니다";
+				new ConfirmModal(this.app, `${path}\n${what}. 취소할 수 없습니다.`, "버리기", () => this.plugin.discard(path)).open();
 			});
 		}
 		row.oncontextmenu = (e) => {

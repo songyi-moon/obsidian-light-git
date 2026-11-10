@@ -25,6 +25,17 @@ export function friendlyError(raw: string): { message: string; settings: boolean
 	return { message: raw, settings: false };
 }
 
+/**
+ * isomorphic-git에 넘길 HTTP 주소. GitLab은 .git 없는 주소의 POST를 거부하고(422),
+ * 시스템 git과 달리 isomorphic-git은 첫 요청의 리디렉션을 POST에 이어 쓰지 않는다.
+ * Azure DevOps(/_git/), CodeCommit(/v1/repos/)은 .git 없는 주소가 정식이라 그대로 둔다.
+ */
+export function gitHttpUrl(url: string): string {
+	if (!/^https?:\/\/[^/]+\/[^/]/i.test(url)) return url;
+	const clean = url.replace(/\/+$/, "");
+	return /\.git$|\/_git\/|\/v1\/repos\//i.test(clean) ? clean : `${clean}.git`;
+}
+
 /** 연결 전에 잡을 수 있는 URL 문제. 없으면 null */
 export function remoteUrlProblem(url: string, mobile: boolean): string | null {
 	if (!url) return "저장소 URL을 입력하세요.";
