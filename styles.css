@@ -155,6 +155,15 @@
 	color: var(--text-faint);
 	font-size: var(--font-ui-smaller);
 }
+.light-git-head-action {
+	margin-left: auto;
+	padding: 2px 4px;
+}
+.is-mobile .light-git-head-action {
+	width: 34px;
+	height: 34px;
+	padding: 0;
+}
 .light-git-group.is-conflict .light-git-group-title {
 	color: var(--text-error);
 }

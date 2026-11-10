@@ -85,6 +85,7 @@ const plugin = (backend: unknown): any => ({
 	stagingDone: async () => {},
 	openCopyDiff: (p: string) => (window as any).__calls.push(["openCopyDiff", p]),
 	discard: (p: string) => (window as any).__calls.push(["discard", p]),
+	discardAll: (p: string[]) => (window as any).__calls.push(["discardAll", p]),
 	openChangeDiff: (p: string, all: string[]) => (window as any).__calls.push(["openChangeDiff", p, all]),
 	openFile: (p: string) => (window as any).__calls.push(["openFile", p]),
 	openCommitDiff: (c: { oid: string }, p: string, all: string[]) => (window as any).__calls.push(["openCommitDiff", c.oid, p, all]),

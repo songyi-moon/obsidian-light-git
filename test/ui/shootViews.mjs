@@ -427,6 +427,19 @@ const menuItems = await page.evaluate(() => {
   return window.__menu;
 });
 check("context menu: same actions as the row", JSON.stringify(menuItems) === JSON.stringify(["차이 보기", "파일 열기", "변경 버리기"]), JSON.stringify(menuItems));
+// 체크한 파일 한꺼번에 버리기: 머리글 버튼 → 확인 → 체크한 파일만
+const pickBtn = await page.evaluate(() => {
+  const has = (id) => !!document.querySelector(`#${id} .light-git-group-head [aria-label="선택한 변경 버리기"]`);
+  const checked = [...document.querySelectorAll("#staging .light-git-file")].filter((r) => { const c = r.querySelector("input"); return c && (c.checked || c.indeterminate); }).map((r) => r.getAttribute("aria-label"));
+  return { staging: has("staging"), clean: has("clean"), merging: has("merging"), checked };
+});
+check("discard picked: button only when files are checked", pickBtn.staging && !pickBtn.clean && !pickBtn.merging && pickBtn.checked.length > 0, JSON.stringify(pickBtn));
+await page.evaluate(() => { window.__calls.length = 0; document.querySelector('#staging [aria-label="선택한 변경 버리기"]').click(); });
+const pickAsk = await page.evaluate(() => [...document.querySelectorAll(".light-git-confirm-text")].at(-1)?.textContent ?? "");
+const pickNoCall = await page.evaluate(() => window.__calls.length === 0);
+await page.evaluate(() => [...document.querySelectorAll(".modal button")].filter((b) => b.textContent === "버리기").at(-1).click());
+const pickCalls = await page.evaluate(() => JSON.stringify(window.__calls));
+check("discard picked: asks with the count first, then discards only checked files", pickNoCall && pickAsk.includes(`선택한 ${pickBtn.checked.length}개`) && pickCalls === JSON.stringify([["discardAll", pickBtn.checked]]), pickAsk.split("\n")[0] + " " + pickCalls);
 await page.evaluate(() => document.querySelector('#staging [aria-label="폴더별로 묶기"]').click());
 check("group toggle: folders on demand", await page.evaluate(() => document.querySelectorAll("#staging .is-folder").length === 3 && document.querySelector('#staging [aria-label="폴더별로 묶기"]').classList.contains("is-active")));
 await page.evaluate(() => document.querySelector('#staging [aria-label="폴더별로 묶기"]').click());

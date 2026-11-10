@@ -556,6 +556,15 @@ export default class LightGitPlugin extends Plugin implements MergeHost {
 		return this.run("되돌리기", async (b) => (await b.discard(path), `${path} 변경을 버렸습니다.`));
 	}
 
+	/** 체크한 파일들의 변경을 버린다. 방금 누른 체크박스의 스테이징이 끝난 뒤 실행 */
+	discardAll(paths: string[]) {
+		return this.run("되돌리기", async (b) => {
+			await this.staging;
+			for (const p of paths) await b.discard(p);
+			return `${paths.length}개 파일의 변경을 버렸습니다.`;
+		});
+	}
+
 	// ---------- 충돌 해결 ----------
 
 	async openMerge(path: string) {

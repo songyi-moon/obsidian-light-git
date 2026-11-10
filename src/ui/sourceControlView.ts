@@ -76,8 +76,9 @@ export class SourceControlView extends ItemView {
 			return b;
 		};
 		tool("refresh-cw", "새로고침", () => this.refresh());
-		tool("arrow-down-to-line", "Pull", () => this.plugin.pullCommand());
-		tool("arrow-up-from-line", "Push", () => this.plugin.pushCommand());
+		// arrow-down-to-line 등은 Obsidian 1.4.x에 없어 빈칸이 된다. 오래된 버전에도 있는 아이콘만 쓴다
+		tool("arrow-down", "Pull", () => this.plugin.pullCommand());
+		tool("arrow-up", "Push", () => this.plugin.pushCommand());
 		tool("history", "History", () => this.plugin.activateHistory(), "");
 		this.groupBtn = tool(
 			"folder-tree",
@@ -178,7 +179,10 @@ export class SourceControlView extends ItemView {
 			const head = row.closest(".light-git-group")?.querySelector<HTMLElement>(".light-git-group-head");
 			if (head) this.select(head);
 		} else if (e.key === "F4") action("파일 열기");
-		else if (mod && e.altKey && e.code === "KeyZ") action("변경 버리기");
+		else if (mod && e.altKey && e.code === "KeyZ") {
+			if (isHead) row.querySelector<HTMLElement>(".light-git-head-action")?.click();
+			else action("변경 버리기");
+		}
 		else return;
 		e.preventDefault();
 		e.stopPropagation();
@@ -308,6 +312,8 @@ export class SourceControlView extends ItemView {
 			return merging || !files.length ? null : staged.length === files.length ? "all" : staged.length ? "some" : "none";
 		};
 		const g = this.group("changes", merging ? "머지됨" : "변경", query ? `${shown.length}/${changes.length}` : changes.length, "", groupCheck(shown), (on) => this.toggle(shown.map((c) => c.path), on));
+		const picked = merging ? [] : shown.filter((c) => c.staged);
+		if (picked.length) this.discardPickedButton(g, picked);
 		if (!shown.length && query) g.createDiv({ cls: "light-git-empty", text: "검색 결과 없음" });
 		else if (!changes.length && !merging) g.createDiv({ cls: "light-git-empty", text: "변경 사항 없음" });
 		// Diff 창에서 F7로 파일 사이를 오가는 순서 = 화면 순서
@@ -341,6 +347,21 @@ export class SourceControlView extends ItemView {
 		}
 		this.markSelected();
 		this.listEl.scrollTop = scrollTop;
+	}
+
+	/** 체크한 파일의 변경을 한 번에 버리는 머리글 버튼. 검색으로 가려진 파일은 건드리지 않는다 */
+	private discardPickedButton(body: HTMLElement, picked: WorkChange[]) {
+		const head = body.parentElement?.querySelector<HTMLElement>(".light-git-group-head");
+		if (!head) return;
+		const b = head.createDiv({ cls: "clickable-icon light-git-icon light-git-head-action light-git-busy-off", attr: { "aria-label": "선택한 변경 버리기" } });
+		setIcon(b, "undo-2");
+		b.onclick = (e) => {
+			e.stopPropagation();
+			const names = picked.slice(0, 5).map((c) => c.path).join("\n") + (picked.length > 5 ? `\n외 ${picked.length - 5}개` : "");
+			const added = picked.filter((c) => c.type === "added").length;
+			const text = `선택한 ${picked.length}개 파일을 마지막 커밋 상태로 되돌립니다.${added ? ` 새 파일 ${added}개는 삭제됩니다.` : ""} 취소할 수 없습니다.\n\n${names}`;
+			new ConfirmModal(this.app, text, "버리기", () => this.plugin.discardAll(picked.map((c) => c.path))).open();
+		};
 	}
 
 	/** 접을 수 있는 그룹 헤더. check가 있으면 '전체 선택' 체크박스 */
